@@ -9,6 +9,11 @@ import { cartRouter } from './cart.js'
 import { addressesRouter } from './addresses.js'
 import { ordersRouter } from './orders.js'
 import { adminOrdersRouter } from './adminOrders.js'
+import { adminProductsRouter } from './adminProducts.js'
+import { adminCategoriesRouter } from './adminCategories.js'
+import { adminCustomersRouter } from './adminCustomers.js'
+import { adminDashboardRouter } from './adminDashboard.js'
+import { adminSettingsRouter } from './adminSettings.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import { requireAdmin } from '../middleware/requireAdmin.js'
 import { User } from '../models/User.js'
@@ -34,6 +39,15 @@ apiRouter.use('/orders', ordersRouter)
 
 // Phase 1.6A Admin Order Management Route
 apiRouter.use('/admin/orders', adminOrdersRouter)
+
+// Phase 1.8 Admin Catalog & Category Management Routes
+apiRouter.use('/admin/products', adminProductsRouter)
+apiRouter.use('/admin/categories', adminCategoriesRouter)
+
+// Phase 1.9 Admin Customers, Dashboard & Settings Routes
+apiRouter.use('/admin/customers', adminCustomersRouter)
+apiRouter.use('/admin/dashboard', adminDashboardRouter)
+apiRouter.use('/admin/settings', adminSettingsRouter)
 
 // Lightweight test endpoints specifically for verifying Cases 1-7 authorization rules
 apiRouter.get('/test/protected', requireAuth, (req, res) => {
