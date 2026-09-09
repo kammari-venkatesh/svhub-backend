@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import { Router } from 'express'
 import jwt from 'jsonwebtoken'
 import { User } from '../models/User.js'
-import { isFirebaseAdminConfigured, verifyGoogleIdToken } from '../lib/firebaseAdmin.js'
+import { isFirebaseAdminConfigured, verifyGoogleIdToken } from '../config/firebase.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import {
   emailError,
@@ -22,7 +22,14 @@ const TOKEN_TTL_MS = 30 * 60 * 1000
 const SALT_ROUNDS = 12
 
 function signUser(user) {
-  return jwt.sign({ sub: String(user._id) }, jwtSecret(), { expiresIn: '7d' })
+  return jwt.sign(
+    {
+      sub: String(user._id),
+      role: (user.role || 'CUSTOMER').toUpperCase(),
+    },
+    jwtSecret(),
+    { expiresIn: '7d' },
+  )
 }
 
 function hashToken(token) {
@@ -33,7 +40,8 @@ function createResetToken() {
   return crypto.randomBytes(32).toString('hex')
 }
 
-authRouter.post('/register', async (req, res) => {
+// 1. Register new customer account
+authRouter.post('/register', async (req, res, next) => {
   try {
     const nameIssue = nameError(req.body?.name)
     const emailIssue = emailError(req.body?.email)
@@ -51,25 +59,31 @@ authRouter.post('/register', async (req, res) => {
       return fail(res, 409, 'duplicate_email', 'An account with this email already exists. Try logging in.')
     }
 
+    // Security check: Registration strictly creates CUSTOMER accounts.
+    // Any incoming role parameter is discarded to prevent privilege escalation.
     const user = await User.create({
       name: String(req.body.name).trim(),
       email,
       phone: normalizePhone(req.body.phone),
       passwordHash: await bcrypt.hash(String(req.body.password), SALT_ROUNDS),
-      provider: 'password',
+      provider: 'PASSWORD',
+      role: 'CUSTOMER',
+      status: 'ACTIVE',
     })
 
-    return res.status(201).json({ user: user.toPublic(), token: signUser(user) })
+    return res.status(201).json({
+      success: true,
+      user: user.toPublic(),
+      data: user.toPublic(),
+      token: signUser(user),
+    })
   } catch (error) {
-    if (error?.code === 11000) {
-      return fail(res, 409, 'duplicate_email', 'An account with this email already exists. Try logging in.')
-    }
-    console.error('register failed', error)
-    return fail(res, 500, 'server', 'Something went wrong. Please try again.')
+    next(error)
   }
 })
 
-authRouter.post('/login', async (req, res) => {
+// 2. Customer & Staff Login (Canonical Unified Login)
+authRouter.post('/login', async (req, res, next) => {
   try {
     const identifier = String(req.body?.identifier ?? req.body?.email ?? '')
     const identifierIssue = loginIdentifierError(identifier)
@@ -100,14 +114,29 @@ authRouter.post('/login', async (req, res) => {
       )
     }
 
-    return res.json({ user: user.toPublic(), token: signUser(user) })
+    const status = String(user.status || 'ACTIVE').toUpperCase()
+    if (status === 'SUSPENDED' || status === 'INACTIVE') {
+      return fail(
+        res,
+        403,
+        'account_inactive',
+        'Your account has been deactivated. Please contact customer care.',
+      )
+    }
+
+    return res.json({
+      success: true,
+      user: user.toPublic(),
+      data: user.toPublic(),
+      token: signUser(user),
+    })
   } catch (error) {
-    console.error('login failed', error)
-    return fail(res, 500, 'server', 'Something went wrong. Please try again.')
+    next(error)
   }
 })
 
-authRouter.post('/google', async (req, res) => {
+// 3. Google OAuth Firebase Authentication
+authRouter.post('/google', async (req, res, next) => {
   try {
     const idToken = String(req.body?.idToken || '')
     if (!idToken) {
@@ -121,7 +150,7 @@ authRouter.post('/google', async (req, res) => {
     try {
       decoded = await verifyGoogleIdToken(idToken)
     } catch (error) {
-      console.error('google token verify failed', error)
+      console.error('Google token verify failed:', error.message)
       return fail(res, 401, 'invalid_token', 'Google Sign-In could not be verified. Please try again.')
     }
 
@@ -150,72 +179,40 @@ authRouter.post('/google', async (req, res) => {
         name,
         email,
         firebaseUid,
-        provider: 'google',
+        provider: 'GOOGLE',
+        role: 'CUSTOMER',
+        status: 'ACTIVE',
       })
     }
 
-    return res.json({ user: user.toPublic(), token: signUser(user), created })
-  } catch (error) {
-    if (error?.code === 11000) {
-      return fail(res, 409, 'duplicate_email', 'An account with this email already exists. Try logging in.')
-    }
-    console.error('google login failed', error)
-    return fail(res, 500, 'server', 'Something went wrong. Please try again.')
-  }
-})
-
-authRouter.post('/forgot-password', async (req, res) => {
-  try {
-    const emailIssue = emailError(req.body?.email)
-    if (emailIssue) return fail(res, 400, 'invalid_email', emailIssue)
-
-    const email = normalizeEmail(req.body.email)
-    const user = await User.findOne({ email })
-
-    if (!user) {
-      return fail(res, 404, 'unknown_email', 'We couldn’t find an account with that email.')
+    const status = String(user.status || 'ACTIVE').toUpperCase()
+    if (status === 'SUSPENDED' || status === 'INACTIVE') {
+      return fail(res, 403, 'account_inactive', 'Your account has been deactivated. Please contact support.')
     }
 
-    const token = createResetToken()
-    user.resetTokenHash = hashToken(token)
-    user.resetTokenExpires = new Date(Date.now() + TOKEN_TTL_MS)
-    await user.save()
-
-    const origin = process.env.CLIENT_URL || process.env.CLIENT_ORIGIN || 'http://localhost:5173'
-    const resetUrl = `${origin}/reset-password?token=${token}`
-    console.log(`Password reset for ${email}: ${resetUrl}`)
-
-    return res.json({ email, token })
-  } catch (error) {
-    console.error('forgot-password failed', error)
-    return fail(res, 500, 'server', 'Something went wrong. Please try again.')
-  }
-})
-
-authRouter.get('/reset-password', async (req, res) => {
-  try {
-    const token = String(req.query.token || '')
-    if (!token) {
-      return fail(res, 400, 'invalid_token', 'This reset link is missing or incomplete.')
-    }
-
-    const user = await User.findOne({
-      resetTokenHash: hashToken(token),
-      resetTokenExpires: { $gt: new Date() },
+    return res.json({
+      success: true,
+      user: user.toPublic(),
+      data: user.toPublic(),
+      token: signUser(user),
+      created,
     })
-
-    if (!user) {
-      return fail(res, 400, 'invalid_token', 'This reset link is invalid or has expired. Request a new one.')
-    }
-
-    return res.json({ email: user.email })
   } catch (error) {
-    console.error('inspect reset failed', error)
-    return fail(res, 500, 'server', 'Something went wrong. Please try again.')
+    next(error)
   }
 })
 
-authRouter.patch('/profile', requireAuth, async (req, res) => {
+// 4. Session & Identity Restoration: GET /api/auth/me (NEW in Phase 1.1)
+authRouter.get('/me', requireAuth, async (req, res) => {
+  return res.json({
+    success: true,
+    user: req.user.toPublic(),
+    data: req.user.toPublic(),
+  })
+})
+
+// 5. Update Customer Profile
+authRouter.patch('/profile', requireAuth, async (req, res, next) => {
   try {
     const user = req.user
     const nameIssue = nameError(req.body?.name)
@@ -269,22 +266,83 @@ authRouter.patch('/profile', requireAuth, async (req, res) => {
       user.passwordHash = await bcrypt.hash(newPassword, SALT_ROUNDS)
     }
 
+    // Update allowable profile fields (role and status cannot be updated here)
     user.name = String(req.body.name).trim()
     user.email = email
     user.phone = normalizePhone(req.body.phone)
     await user.save()
 
-    return res.json({ user: user.toPublic() })
+    return res.json({
+      success: true,
+      user: user.toPublic(),
+      data: user.toPublic(),
+    })
   } catch (error) {
-    if (error?.code === 11000) {
-      return fail(res, 409, 'duplicate_email', 'An account with this email already exists.')
-    }
-    console.error('update profile failed', error)
-    return fail(res, 500, 'server', 'Something went wrong. Please try again.')
+    next(error)
   }
 })
 
-authRouter.post('/reset-password', async (req, res) => {
+// 6. Request Password Reset Link
+authRouter.post('/forgot-password', async (req, res, next) => {
+  try {
+    const emailIssue = emailError(req.body?.email)
+    if (emailIssue) return fail(res, 400, 'invalid_email', emailIssue)
+
+    const email = normalizeEmail(req.body.email)
+    const user = await User.findOne({ email })
+
+    if (!user) {
+      return fail(res, 404, 'unknown_email', 'We couldn’t find an account with that email.')
+    }
+
+    const token = createResetToken()
+    user.resetTokenHash = hashToken(token)
+    user.resetTokenExpires = new Date(Date.now() + TOKEN_TTL_MS)
+    await user.save()
+
+    const origin = process.env.CLIENT_URL || process.env.CLIENT_ORIGIN || 'http://localhost:5173'
+    const resetUrl = `${origin}/reset-password?token=${token}`
+    console.log(`Password reset requested for ${email}: ${resetUrl}`)
+
+    return res.json({
+      success: true,
+      email,
+      token,
+      message: 'Password reset instructions sent.',
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// 7. Validate Password Reset Token
+authRouter.get('/reset-password', async (req, res, next) => {
+  try {
+    const token = String(req.query.token || '')
+    if (!token) {
+      return fail(res, 400, 'invalid_token', 'This reset link is missing or incomplete.')
+    }
+
+    const user = await User.findOne({
+      resetTokenHash: hashToken(token),
+      resetTokenExpires: { $gt: new Date() },
+    })
+
+    if (!user) {
+      return fail(res, 400, 'invalid_token', 'This reset link is invalid or has expired. Request a new one.')
+    }
+
+    return res.json({
+      success: true,
+      email: user.email,
+    })
+  } catch (error) {
+    next(error)
+  }
+})
+
+// 8. Confirm Password Reset
+authRouter.post('/reset-password', async (req, res, next) => {
   try {
     const token = String(req.body?.token || '')
     const passIssue = passwordError(req.body?.password)
@@ -305,11 +363,22 @@ authRouter.post('/reset-password', async (req, res) => {
     user.resetTokenExpires = null
     await user.save()
 
-    return res.json({ email: user.email })
+    return res.json({
+      success: true,
+      email: user.email,
+      message: 'Password has been reset successfully. You can now log in.',
+    })
   } catch (error) {
-    console.error('reset-password failed', error)
-    return fail(res, 500, 'server', 'Something went wrong. Please try again.')
+    next(error)
   }
+})
+
+// 9. Logout
+authRouter.post('/logout', requireAuth, (req, res) => {
+  return res.json({
+    success: true,
+    message: 'Logged out successfully.',
+  })
 })
 
 export { authRouter }

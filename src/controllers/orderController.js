@@ -1,0 +1,394 @@
+import mongoose from 'mongoose'
+import { Order } from '../models/Order.js'
+import { Cart } from '../models/Cart.js'
+import { Product } from '../models/Product.js'
+import { Address } from '../models/Address.js'
+import { Settings } from '../models/Settings.js'
+import { Counter } from '../models/Counter.js'
+
+export function formatPublicOrder(order) {
+  return {
+    id: String(order._id),
+    orderNumber: order.orderNumber,
+    userId: String(order.userId),
+    customerName: order.customerName,
+    email: order.email,
+    phone: order.phone,
+    shippingAddress: order.shippingAddress,
+    items: (order.items || []).map((item) => ({
+      productId: String(item.productId),
+      variantId: item.variantId,
+      productName: item.productName,
+      variantLabel: item.variantLabel,
+      weight: item.weight || '',
+      sku: item.sku,
+      unitPrice: item.unitPrice,
+      originalPrice: item.originalPrice || null,
+      discount: item.discount || null,
+      quantity: item.quantity,
+      lineTotal: item.lineTotal,
+      image: item.image || '',
+      storefront: item.storefront || '',
+    })),
+    subtotal: order.subtotal,
+    shippingFee: order.shippingFee,
+    discount: order.discount,
+    totalAmount: order.totalAmount,
+    status: order.status,
+    paymentStatus: order.paymentStatus,
+    paymentMethod: order.paymentMethod || null,
+    paymentId: order.paymentId || null,
+    razorpayOrderId: order.razorpayOrderId || null,
+    courier: order.courier || null,
+    trackingNumber: order.trackingNumber || null,
+    notes: order.notes || '',
+    history: order.history || [],
+    createdAt: order.createdAt,
+    updatedAt: order.updatedAt,
+  }
+}
+
+// 1. Create Application Order (POST /api/orders)
+export async function createOrder(req, res, next) {
+  try {
+    const userId = req.user._id
+
+    // 1. Load customer's persistent cart from MongoDB
+    const cart = await Cart.findOne({ userId })
+    if (!cart || !Array.isArray(cart.items) || cart.items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'empty_cart',
+          message: 'Cannot place an order with an empty cart.',
+        },
+      })
+    }
+
+    // 2. Resolve every cart line against live MongoDB Product & Variant data
+    const productIds = cart.items.map((i) => i.productId)
+    const products = await Product.find({ _id: { $in: productIds } })
+    const productMap = new Map(products.map((p) => [String(p._id), p]))
+
+    const orderItems = []
+    let subtotal = 0
+
+    for (const item of cart.items) {
+      const product = productMap.get(String(item.productId))
+      if (!product || product.isActive === false) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'product_unavailable',
+            message: `Product "${product ? product.name : item.productId}" is discontinued or unavailable.`,
+          },
+        })
+      }
+
+      const variant = (product.variants || []).find(
+        (v) => v.variantId === item.variantId && v.isActive !== false,
+      )
+      if (!variant) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'variant_unavailable',
+            message: `Selected pack variant "${item.variantId}" for "${product.name}" is no longer available.`,
+          },
+        })
+      }
+
+      const qty = item.quantity
+      if (!Number.isInteger(qty) || qty < 1 || qty > 99) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_quantity',
+            message: `Invalid quantity ${qty} for "${product.name}".`,
+          },
+        })
+      }
+
+      if (qty > variant.qty) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'insufficient_stock',
+            message: `Insufficient stock for "${product.name} (${variant.label})". Requested: ${qty}, Available: ${variant.qty}.`,
+          },
+        })
+      }
+
+      // Authoritative server-side price calculation
+      const unitPrice = variant.price
+      const lineTotal = unitPrice * qty
+      subtotal += lineTotal
+
+      orderItems.push({
+        productId: product._id,
+        variantId: variant.variantId,
+        productName: product.name,
+        variantLabel: variant.label,
+        weight: variant.weight || '',
+        sku: variant.sku,
+        unitPrice,
+        originalPrice: variant.originalPrice || null,
+        discount: variant.discount || null,
+        quantity: qty,
+        lineTotal,
+        image: product.image,
+        storefront: product.storefront || '',
+      })
+    }
+
+    // 3. Resolve and validate delivery address
+    let shippingAddress = null
+    const { addressId, shippingAddress: customAddress } = req.body || {}
+
+    if (addressId) {
+      if (!mongoose.isValidObjectId(addressId)) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_address_id',
+            message: 'Invalid addressId specified.',
+          },
+        })
+      }
+
+      // Strictly verify customer ownership of address
+      const ownedAddress = await Address.findOne({ _id: addressId, userId })
+      if (!ownedAddress) {
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'address_not_found',
+            message: 'Delivery address not found or not owned by your account.',
+          },
+        })
+      }
+
+      shippingAddress = {
+        name: ownedAddress.name,
+        phone: ownedAddress.phone,
+        street: ownedAddress.street,
+        city: ownedAddress.city,
+        state: ownedAddress.state,
+        pin: ownedAddress.pin,
+        country: ownedAddress.country || 'India',
+        lines: [
+          ownedAddress.street,
+          `${ownedAddress.city}, ${ownedAddress.state}`,
+          `${ownedAddress.pin}, ${ownedAddress.country || 'India'}`,
+        ],
+      }
+    } else if (customAddress && typeof customAddress === 'object') {
+      const name = String(customAddress.name || '').trim()
+      const phone = String(customAddress.phone || '').trim()
+      const street = String(customAddress.street || '').trim()
+      const city = String(customAddress.city || '').trim()
+      const state = String(customAddress.state || '').trim()
+      const pin = String(customAddress.pin || '').trim()
+      const country = String(customAddress.country || 'India').trim()
+
+      if (!name || name.length < 2) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_name',
+            message: 'Recipient name must be at least 2 characters.',
+          },
+        })
+      }
+      if (!phone) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_phone',
+            message: 'Delivery contact phone is required.',
+          },
+        })
+      }
+      if (!street || !city || !state) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_address',
+            message: 'Complete street, city, and state are required.',
+          },
+        })
+      }
+      if (!pin || !/^\d{6}$/.test(pin)) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_pin',
+            message: 'A valid 6-digit PIN code is required.',
+          },
+        })
+      }
+
+      shippingAddress = {
+        name,
+        phone,
+        street,
+        city,
+        state,
+        pin,
+        country,
+        lines: [
+          street,
+          `${city}, ${state}`,
+          `${pin}, ${country}`,
+        ],
+      }
+    } else {
+      // Fallback to customer's default address if present
+      const defaultAddr = await Address.findOne({ userId, isDefault: true })
+      if (defaultAddr) {
+        shippingAddress = {
+          name: defaultAddr.name,
+          phone: defaultAddr.phone,
+          street: defaultAddr.street,
+          city: defaultAddr.city,
+          state: defaultAddr.state,
+          pin: defaultAddr.pin,
+          country: defaultAddr.country || 'India',
+          lines: [
+            defaultAddr.street,
+            `${defaultAddr.city}, ${defaultAddr.state}`,
+            `${defaultAddr.pin}, ${defaultAddr.country || 'India'}`,
+          ],
+        }
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'missing_address',
+            message: 'A valid delivery address is required to place an order.',
+          },
+        })
+      }
+    }
+
+    // 4. Calculate Shipping Fee from Settings singleton
+    const settings = await Settings.getSettings()
+    const shippingMethod = String(
+      req.body?.shippingMethod || req.body?.delivery || 'standard',
+    ).toLowerCase()
+
+    if (shippingMethod !== 'standard' && shippingMethod !== 'express') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'invalid_shipping_method',
+          message: 'Shipping method must be either "standard" or "express".',
+        },
+      })
+    }
+
+    let shippingFee = 0
+    if (shippingMethod === 'express') {
+      shippingFee = settings.expressShippingFee ?? 120
+    } else {
+      // Standard shipping: Free if subtotal >= freeShippingThreshold
+      const threshold = settings.freeShippingThreshold ?? 499
+      if (subtotal >= threshold) {
+        shippingFee = 0
+      } else {
+        shippingFee = settings.standardShippingFee ?? 40
+      }
+    }
+
+    const discount = 0 // Future promo / coupon code
+    const totalAmount = subtotal + shippingFee - discount
+
+    // 5. Generate Atomic Sequential Order Number
+    const seq = await Counter.getNextSequence('order_number')
+    const orderNumber = `#SVH-${seq}`
+
+    // 6. Create Application Order Document
+    // CRITICAL: Stock is NOT deducted in Phase 1.5; Cart is NOT cleared in Phase 1.5
+    const order = await Order.create({
+      orderNumber,
+      userId,
+      customerName: shippingAddress.name || req.user.name,
+      email: req.user.email,
+      phone: shippingAddress.phone || req.user.phone || '',
+      shippingAddress,
+      items: orderItems,
+      subtotal,
+      shippingFee,
+      discount,
+      totalAmount,
+      status: 'PENDING_PAYMENT',
+      paymentStatus: 'PENDING',
+      notes: typeof req.body?.notes === 'string' ? req.body.notes.trim() : '',
+      history: [
+        {
+          status: 'PENDING_PAYMENT',
+          at: new Date(),
+          note: 'Application order created; awaiting gateway payment initiation',
+        },
+      ],
+    })
+
+    res.status(201).json({
+      success: true,
+      data: formatPublicOrder(order),
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+// 2. Get customer's order history (GET /api/orders)
+export async function getCustomerOrders(req, res, next) {
+  try {
+    const rawLimit = parseInt(req.query.limit, 10)
+    const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(50, rawLimit) : 20
+
+    const orders = await Order.find({ userId: req.user._id })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+
+    res.json({
+      success: true,
+      data: orders.map(formatPublicOrder),
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+// 3. Get customer order details by ID or orderNumber (GET /api/orders/:id)
+export async function getCustomerOrderById(req, res, next) {
+  try {
+    const identifier = String(req.params.id || '').trim()
+
+    let query
+    if (mongoose.isValidObjectId(identifier)) {
+      query = { _id: identifier, userId: req.user._id }
+    } else {
+      query = { orderNumber: identifier, userId: req.user._id }
+    }
+
+    const order = await Order.findOne(query)
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'order_not_found',
+          message: 'Order not found or does not belong to your account.',
+        },
+      })
+    }
+
+    res.json({
+      success: true,
+      data: formatPublicOrder(order),
+    })
+  } catch (err) {
+    next(err)
+  }
+}
