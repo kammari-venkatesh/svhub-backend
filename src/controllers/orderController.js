@@ -168,16 +168,22 @@ export async function createOrder(req, res, next) {
         })
       }
 
+      const streetLine = [ownedAddress.house, ownedAddress.street, ownedAddress.area].filter(Boolean).join(', ') || ownedAddress.street
       shippingAddress = {
         name: ownedAddress.name,
         phone: ownedAddress.phone,
+        house: ownedAddress.house || '',
         street: ownedAddress.street,
+        area: ownedAddress.area || '',
+        landmark: ownedAddress.landmark || '',
         city: ownedAddress.city,
         state: ownedAddress.state,
         pin: ownedAddress.pin,
         country: ownedAddress.country || 'India',
+        latitude: ownedAddress.location?.latitude ?? null,
+        longitude: ownedAddress.location?.longitude ?? null,
         lines: [
-          ownedAddress.street,
+          streetLine,
           `${ownedAddress.city}, ${ownedAddress.state}`,
           `${ownedAddress.pin}, ${ownedAddress.country || 'India'}`,
         ],
@@ -185,11 +191,16 @@ export async function createOrder(req, res, next) {
     } else if (customAddress && typeof customAddress === 'object') {
       const name = String(customAddress.name || '').trim()
       const phone = String(customAddress.phone || '').trim()
+      const house = String(customAddress.house || '').trim()
       const street = String(customAddress.street || '').trim()
+      const area = String(customAddress.area || '').trim()
+      const landmark = String(customAddress.landmark || '').trim()
       const city = String(customAddress.city || '').trim()
       const state = String(customAddress.state || '').trim()
       const pin = String(customAddress.pin || '').trim()
       const country = String(customAddress.country || 'India').trim()
+      const lat = Number.isFinite(Number(customAddress.latitude)) ? Number(customAddress.latitude) : null
+      const lng = Number.isFinite(Number(customAddress.longitude)) ? Number(customAddress.longitude) : null
 
       if (!name || name.length < 2) {
         return res.status(400).json({
@@ -228,16 +239,22 @@ export async function createOrder(req, res, next) {
         })
       }
 
+      const streetLine = [house, street, area].filter(Boolean).join(', ') || street
       shippingAddress = {
         name,
         phone,
+        house,
         street,
+        area,
+        landmark,
         city,
         state,
         pin,
         country,
+        latitude: lat,
+        longitude: lng,
         lines: [
-          street,
+          streetLine,
           `${city}, ${state}`,
           `${pin}, ${country}`,
         ],

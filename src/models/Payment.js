@@ -37,7 +37,7 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       required: true,
       enum: {
-        values: ['CREATED', 'PENDING', 'SUCCESS', 'FAILED', 'REFUNDED'],
+        values: ['CREATED', 'PENDING', 'SUCCESS', 'PAID', 'FAILED', 'REFUNDED'],
         message: '{VALUE} is not a valid payment transaction status',
       },
       default: 'CREATED',

@@ -28,10 +28,25 @@ const addressSchema = new mongoose.Schema(
       required: [true, 'Phone number is required'],
       trim: true,
     },
+    house: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     street: {
       type: String,
       required: [true, 'Street address is required'],
       trim: true,
+    },
+    area: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    landmark: {
+      type: String,
+      trim: true,
+      default: '',
     },
     city: {
       type: String,
@@ -52,6 +67,10 @@ const addressSchema = new mongoose.Schema(
       type: String,
       default: 'India',
       trim: true,
+    },
+    location: {
+      latitude: { type: Number, default: null },
+      longitude: { type: Number, default: null },
     },
     isDefault: {
       type: Boolean,

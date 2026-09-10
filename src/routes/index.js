@@ -8,6 +8,7 @@ import { settingsRouter } from './settings.js'
 import { cartRouter } from './cart.js'
 import { addressesRouter } from './addresses.js'
 import { ordersRouter } from './orders.js'
+import { paymentsRouter } from './payments.js'
 import { adminOrdersRouter } from './adminOrders.js'
 import { adminProductsRouter } from './adminProducts.js'
 import { adminCategoriesRouter } from './adminCategories.js'
@@ -36,6 +37,9 @@ apiRouter.use('/addresses', addressesRouter)
 
 // Phase 1.5 Order Creation Route
 apiRouter.use('/orders', ordersRouter)
+
+// Phase 2.1 Razorpay Payment Routes
+apiRouter.use('/payments', paymentsRouter)
 
 // Phase 1.6A Admin Order Management Route
 apiRouter.use('/admin/orders', adminOrdersRouter)

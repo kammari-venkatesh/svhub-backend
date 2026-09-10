@@ -24,8 +24,9 @@ adminProductsRouter.post('/', createAdminProduct)
 // GET /api/admin/products/:id - Get product details by ID or slug
 adminProductsRouter.get('/:id', getAdminProductById)
 
-// PUT /api/admin/products/:id - Update product details
+// PUT & PATCH /api/admin/products/:id - Update product details
 adminProductsRouter.put('/:id', updateAdminProduct)
+adminProductsRouter.patch('/:id', updateAdminProduct)
 
 // DELETE /api/admin/products/:id - Safe deactivation (isActive: false)
 adminProductsRouter.delete('/:id', deleteAdminProduct)

@@ -19,5 +19,6 @@ addressesRouter.patch('/:id', updateAddress)
 addressesRouter.put('/:id', updateAddress)
 addressesRouter.delete('/:id', deleteAddress)
 addressesRouter.patch('/:id/default', setDefaultAddress)
+addressesRouter.post('/:id/default', setDefaultAddress)
 
 export { addressesRouter }
