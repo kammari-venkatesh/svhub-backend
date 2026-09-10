@@ -106,7 +106,19 @@ export async function createRazorpayOrder(req, res, next) {
         },
       }
 
-      const rzpOrder = await razorpay.orders.create(options)
+      let rzpOrder
+      try {
+        rzpOrder = await razorpay.orders.create(options)
+      } catch (rzpErr) {
+        const errorDesc = rzpErr.error?.description || rzpErr.message || 'Razorpay order creation failed'
+        return res.status(rzpErr.statusCode || 502).json({
+          success: false,
+          error: {
+            code: rzpErr.error?.code || 'razorpay_api_error',
+            message: `Payment gateway error: ${errorDesc}. Please check your Razorpay Test Mode credentials in svhub-backend/.env.`,
+          },
+        })
+      }
       razorpayOrderId = rzpOrder.id
 
       payment = await Payment.create({

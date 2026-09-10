@@ -174,6 +174,7 @@ const orderSchema = new mongoose.Schema(
           'CONFIRMED',
           'PROCESSING',
           'SHIPPED',
+          'OUT_FOR_DELIVERY',
           'DELIVERED',
           'CANCELLED',
           'REQUIRES_RECONCILIATION',
@@ -181,6 +182,13 @@ const orderSchema = new mongoose.Schema(
         message: '{VALUE} is not a valid order status',
       },
       default: 'PENDING_PAYMENT',
+      index: true,
+    },
+    expectedDeliveryDate: {
+      type: Date,
+      default: function () {
+        return new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+      },
       index: true,
     },
     paymentStatus: {

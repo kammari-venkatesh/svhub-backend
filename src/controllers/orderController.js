@@ -42,6 +42,11 @@ export function formatPublicOrder(order) {
     courier: order.courier || null,
     trackingNumber: order.trackingNumber || null,
     notes: order.notes || '',
+    expectedDeliveryDate:
+      order.expectedDeliveryDate ||
+      (order.createdAt
+        ? new Date(new Date(order.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000)
+        : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)),
     history: order.history || [],
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
@@ -340,6 +345,7 @@ export async function createOrder(req, res, next) {
       totalAmount,
       status: 'PENDING_PAYMENT',
       paymentStatus: 'PENDING',
+      expectedDeliveryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       notes: typeof req.body?.notes === 'string' ? req.body.notes.trim() : '',
       history: [
         {
@@ -387,7 +393,13 @@ export async function getCustomerOrderById(req, res, next) {
     if (mongoose.isValidObjectId(identifier)) {
       query = { _id: identifier, userId: req.user._id }
     } else {
-      query = { orderNumber: identifier, userId: req.user._id }
+      // Tolerate optional leading '#', case-insensitivity (e.g. #SVH-10265, SVH-10265, svh-10265)
+      const cleanNumber = identifier.replace(/^#/, '').trim()
+      const escaped = cleanNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      query = {
+        orderNumber: new RegExp(`^#?${escaped}$`, 'i'),
+        userId: req.user._id,
+      }
     }
 
     const order = await Order.findOne(query)

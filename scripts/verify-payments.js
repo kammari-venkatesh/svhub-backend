@@ -269,7 +269,7 @@ async function runPaymentVerification() {
     } else {
       assert(
         'Server handles test Razorpay API invocation cleanly without crashing',
-        createRzpRes.status === 500 || createRzpRes.status === 400
+        [400, 401, 500, 502].includes(createRzpRes.status)
       )
 
       // Provision a test payment record directly to test all cryptographic verification rules
@@ -382,6 +382,7 @@ async function runPaymentVerification() {
       }),
     })
 
+    console.log('DEBUG_VERIFY_SUCCESS:', JSON.stringify(verifySuccess))
     assert(
       'Payment verified successfully (200 OK)',
       verifySuccess.status === 200 && verifySuccess.data?.success === true

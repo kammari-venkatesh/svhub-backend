@@ -200,6 +200,16 @@ All regression suites remain 100% green:
 
 ---
 
-## 9. Remaining Limitations
+## 9. Real Razorpay TEST Mode Payment Verification Status
+- **Test Mode Key Configuration**: Verified that `RAZORPAY_KEY_ID` starts with `rzp_test_` and `RAZORPAY_KEY_SECRET` is securely present on the server without any client exposure.
+- **Upstream Gateway Order Creation**: Invocation of official `razorpay.orders.create()` against `api.razorpay.com` was executed. The credentials currently residing in `svhub-backend/.env` are local placeholder test values (`rzp_test_svhubkey123`), which returned HTTP 401 `Authentication failed` from Razorpay's authentication servers. A valid merchant API key pair from [dashboard.razorpay.com](https://dashboard.razorpay.com) (Settings > API Keys > Generate Test Key) is required for upstream order creation to return HTTP 200.
+- **Browser Execution**: The automated Playwright browser subagent encountered an environment-level driver download failure (`playwright-1.57.0-win32_x64.zip` returned 404 from the CDN).
+- **Cryptographic & Logic Verification**: All local cryptographic HMAC SHA-256 signature verifications, amount tampering protections, duplicate verification idempotency, atomic inventory deductions with automatic rollbacks, and cart clearing logic passed with 100% success across 44 automated tests.
+
+---
+
+## 10. Remaining Limitations
 - Live mode credentials and real financial transactions are strictly deferred.
+- Upstream test transaction requires merchant-registered Test Mode credentials from Razorpay Dashboard.
 - Automated refunds and partial capture workflows are deferred to future operational phases.
+

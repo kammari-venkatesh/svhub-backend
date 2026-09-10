@@ -7,6 +7,7 @@ const ORDER_STATUS_MAP = {
   CONFIRMED: 'CONFIRMED',
   PROCESSING: 'PROCESSING',
   SHIPPED: 'SHIPPED',
+  OUT_FOR_DELIVERY: 'OUT_FOR_DELIVERY',
   DELIVERED: 'DELIVERED',
   CANCELLED: 'CANCELLED',
   REQUIRES_RECONCILIATION: 'REQUIRES_RECONCILIATION',
@@ -66,6 +67,7 @@ export function formatAdminOrder(order) {
     CONFIRMED: 'Confirmed',
     PROCESSING: 'Processing',
     SHIPPED: 'Shipped',
+    OUT_FOR_DELIVERY: 'Out for Delivery',
     DELIVERED: 'Delivered',
     CANCELLED: 'Cancelled',
     REQUIRES_RECONCILIATION: 'Pending',
@@ -165,6 +167,11 @@ export function formatAdminOrder(order) {
     courier: doc.courier || null,
     trackingNumber: doc.trackingNumber || null,
     notes: doc.notes || '',
+    expectedDeliveryDate:
+      doc.expectedDeliveryDate ||
+      (doc.createdAt
+        ? new Date(new Date(doc.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000)
+        : null),
     history,
     statusHistory: history,
     storefronts: Array.from(new Set(items.map((i) => i.storefront).filter(Boolean))),
@@ -349,7 +356,7 @@ export async function updateAdminOrder(req, res, next) {
       })
     }
 
-    const { status, paymentStatus, courier, trackingNumber, notes } = req.body || {}
+    const { status, paymentStatus, courier, trackingNumber, notes, expectedDeliveryDate } = req.body || {}
 
     // Whitelist and validate Order Status
     if (status !== undefined) {
@@ -359,7 +366,7 @@ export async function updateAdminOrder(req, res, next) {
           success: false,
           error: {
             code: 'invalid_order_status',
-            message: `Invalid order status: "${status}". Supported values are PENDING_PAYMENT, CONFIRMED, PROCESSING, SHIPPED, DELIVERED, CANCELLED.`,
+            message: `Invalid order status: "${status}". Supported values are PENDING_PAYMENT, CONFIRMED, PROCESSING, SHIPPED, OUT_FOR_DELIVERY, DELIVERED, CANCELLED.`,
           },
         })
       }
@@ -391,6 +398,61 @@ export async function updateAdminOrder(req, res, next) {
         })
       }
       order.paymentStatus = targetPayment
+    }
+
+    // Whitelist and validate Expected Delivery Date
+    if (expectedDeliveryDate !== undefined) {
+      if (expectedDeliveryDate === null || expectedDeliveryDate === '') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_expected_delivery_date',
+            message: 'Expected delivery date cannot be empty.',
+          },
+        })
+      }
+      const parsedDate = new Date(expectedDeliveryDate)
+      if (Number.isNaN(parsedDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_expected_delivery_date',
+            message: 'Invalid expected delivery date format.',
+          },
+        })
+      }
+
+      // Check: Reject dates earlier than order creation day for active (non-delivered, non-cancelled) orders
+      const orderCreatedDay = new Date(order.createdAt)
+      orderCreatedDay.setHours(0, 0, 0, 0)
+      if (order.status !== 'DELIVERED' && order.status !== 'CANCELLED' && parsedDate < orderCreatedDay) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_expected_delivery_date',
+            message: 'Expected delivery date cannot be earlier than order creation date for active orders.',
+          },
+        })
+      }
+
+      // Audit trail in order history if date actually changed
+      const currentExpected = order.expectedDeliveryDate
+        ? new Date(order.expectedDeliveryDate).getTime()
+        : (order.createdAt ? new Date(order.createdAt).getTime() + 7 * 86400000 : null)
+
+      if (!currentExpected || parsedDate.getTime() !== currentExpected) {
+        const oldStr = currentExpected
+          ? new Date(currentExpected).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+          : 'Initial default'
+        const newStr = parsedDate.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+        order.history = order.history || []
+        order.history.push({
+          status: order.status,
+          at: new Date(),
+          note: `Expected delivery changed: ${oldStr} → ${newStr} by admin (${req.user?.email || 'Admin'})`,
+        })
+        order.expectedDeliveryDate = parsedDate
+      }
     }
 
     // Whitelist and sanitize Courier
