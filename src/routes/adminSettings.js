@@ -5,6 +5,7 @@ import {
   getAdminSettings,
   updateAdminSettings,
 } from '../controllers/adminSettingsController.js'
+import { adminMutationRateLimiter } from '../middleware/rateLimiter.js'
 
 const adminSettingsRouter = Router()
 
@@ -15,6 +16,6 @@ adminSettingsRouter.use(requireAuth, requireAdmin)
 adminSettingsRouter.get('/', getAdminSettings)
 
 // PATCH /api/admin/settings
-adminSettingsRouter.patch('/', updateAdminSettings)
+adminSettingsRouter.patch('/', adminMutationRateLimiter, updateAdminSettings)
 
 export { adminSettingsRouter }

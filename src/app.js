@@ -4,9 +4,13 @@ import { env } from './config/env.js'
 import { errorHandler } from './middleware/errorHandler.js'
 import { notFound } from './middleware/notFound.js'
 import { requestLogger } from './middleware/requestLogger.js'
+import { requestIdMiddleware } from './middleware/requestId.js'
 import { apiRouter } from './routes/index.js'
 
 const app = express()
+
+// Request Correlation ID (Phase 2.4G)
+app.use(requestIdMiddleware)
 
 // Security Baseline Headers
 app.use((req, res, next) => {
@@ -41,8 +45,30 @@ app.use(
   }),
 )
 
-// Body Parsers with safe payload limits
-app.use(express.json({ limit: '1mb' }))
+// Webhook Route-Specific Raw Body Parser (Phase 2.4C)
+// Preserves exact unaltered bytes on req.body (as Buffer) and req.rawBody specifically for Razorpay webhooks
+app.use(
+  '/api/payments/razorpay/webhook',
+  express.raw({ type: '*/*', limit: '1mb' }),
+  (req, res, next) => {
+    if (Buffer.isBuffer(req.body)) {
+      req.rawBody = req.body
+    }
+    next()
+  },
+)
+
+// Standard Body Parsers with safe payload limits
+app.use(
+  express.json({
+    limit: '1mb',
+    verify: (req, res, buf) => {
+      if (req.originalUrl?.includes?.('/webhook')) {
+        req.rawBody = buf
+      }
+    },
+  }),
+)
 app.use(express.urlencoded({ extended: true, limit: '1mb' }))
 
 // Request Logger (never logs sensitive data)

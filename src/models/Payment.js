@@ -19,6 +19,30 @@ const paymentSchema = new mongoose.Schema(
       required: [true, 'Payment amount is required'],
       min: [0, 'Payment amount cannot be negative'],
     },
+    capturedAmount: {
+      type: Number,
+      default: 0,
+      min: [0, 'Captured amount cannot be negative'],
+    },
+    refundedAmount: {
+      type: Number,
+      default: 0,
+      min: [0, 'Refunded amount cannot be negative'],
+    },
+    refundableAmount: {
+      type: Number,
+      default: function () {
+        if (!this) return 0
+        const cap = Number.isFinite(this.capturedAmount)
+          ? this.capturedAmount
+          : Number.isFinite(this.amount)
+          ? this.amount
+          : 0
+        const ref = Number.isFinite(this.refundedAmount) ? this.refundedAmount : 0
+        return Math.max(0, cap - ref)
+      },
+      min: [0, 'Refundable amount cannot be negative'],
+    },
     currency: {
       type: String,
       required: [true, 'Currency is required'],
@@ -37,7 +61,16 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       required: true,
       enum: {
-        values: ['CREATED', 'PENDING', 'SUCCESS', 'PAID', 'FAILED', 'REFUNDED'],
+        values: [
+          'CREATED',
+          'PENDING',
+          'SUCCESS',
+          'PAID',
+          'FAILED',
+          'PARTIALLY_REFUNDED',
+          'REFUNDED',
+          'REQUIRES_RECONCILIATION',
+        ],
         message: '{VALUE} is not a valid payment transaction status',
       },
       default: 'CREATED',
@@ -68,6 +101,22 @@ const paymentSchema = new mongoose.Schema(
     },
     errorReason: {
       type: String,
+      default: null,
+    },
+    gatewayStatus: {
+      type: String,
+      default: null,
+    },
+    reconciliationReason: {
+      type: String,
+      default: null,
+    },
+    reconciliationAttempts: {
+      type: Number,
+      default: 0,
+    },
+    lastReconciledAt: {
+      type: Date,
       default: null,
     },
     rawWebhookPayload: {

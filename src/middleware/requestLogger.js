@@ -17,7 +17,8 @@ export function requestLogger(req, res, next) {
     const color = status >= 500 ? '\x1b[31m' : status >= 400 ? '\x1b[33m' : status >= 300 ? '\x1b[36m' : '\x1b[32m'
     const reset = '\x1b[0m'
 
-    console.log(`${method} ${url} ${color}${status}${reset} - ${duration}ms`)
+    const reqId = req.id ? `[${req.id}] ` : ''
+    console.log(`${reqId}${method} ${url} ${color}${status}${reset} - ${duration}ms`)
   })
 
   next()

@@ -6,7 +6,14 @@ import {
   getAdminOrderById,
   updateAdminOrder,
   cancelAdminOrder,
+  reconcileAdminOrder,
+  refundAdminOrder,
+  reconcileAdminRefund,
 } from '../controllers/adminOrderController.js'
+import {
+  adminRefundRateLimiter,
+  adminMutationRateLimiter,
+} from '../middleware/rateLimiter.js'
 
 const adminOrdersRouter = Router()
 
@@ -20,9 +27,18 @@ adminOrdersRouter.get('/', getAdminOrders)
 adminOrdersRouter.get('/:id', getAdminOrderById)
 
 // PATCH /api/admin/orders/:id - Update order status, payment status, tracking, courier, notes
-adminOrdersRouter.patch('/:id', updateAdminOrder)
+adminOrdersRouter.patch('/:id', adminMutationRateLimiter, updateAdminOrder)
 
 // POST /api/admin/orders/:id/cancel - Cancel order with mandatory reason
-adminOrdersRouter.post('/:id/cancel', cancelAdminOrder)
+adminOrdersRouter.post('/:id/cancel', adminMutationRateLimiter, cancelAdminOrder)
+
+// POST /api/admin/orders/:id/reconcile - Trigger administrative payment reconciliation
+adminOrdersRouter.post('/:id/reconcile', adminMutationRateLimiter, reconcileAdminOrder)
+
+// POST /api/admin/orders/:id/refund - Initiate full or partial refund on order (Phase 2.4E)
+adminOrdersRouter.post('/:id/refund', adminRefundRateLimiter, refundAdminOrder)
+
+// POST /api/admin/orders/:id/refunds/:refundId/reconcile - Reconcile specific refund record (Phase 2.4E)
+adminOrdersRouter.post('/:id/refunds/:refundId/reconcile', adminMutationRateLimiter, reconcileAdminRefund)
 
 export { adminOrdersRouter }

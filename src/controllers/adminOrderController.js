@@ -1,5 +1,14 @@
 import mongoose from 'mongoose'
 import { Order } from '../models/Order.js'
+import { Payment } from '../models/Payment.js'
+import { Refund } from '../models/Refund.js'
+import { restoreOrderInventory } from '../utils/inventory.js'
+import { reconcileOrderPayment } from '../services/paymentReconciliationService.js'
+import {
+  initiateRefund,
+  reconcileRefundRecord,
+} from '../services/refundReconciliationService.js'
+import { recordAuditLog } from '../services/auditLogger.js'
 
 const ORDER_STATUS_MAP = {
   PENDING_PAYMENT: 'PENDING_PAYMENT',
@@ -19,6 +28,17 @@ const PAYMENT_STATUS_MAP = {
   PAID: 'SUCCESS',
   FAILED: 'FAILED',
   REFUNDED: 'REFUNDED',
+}
+
+const ALLOWED_ORDER_TRANSITIONS = {
+  PENDING_PAYMENT: ['CONFIRMED', 'CANCELLED'],
+  CONFIRMED: ['PROCESSING', 'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED', 'REQUIRES_RECONCILIATION'],
+  PROCESSING: ['SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'],
+  SHIPPED: ['OUT_FOR_DELIVERY', 'DELIVERED'],
+  OUT_FOR_DELIVERY: ['DELIVERED'],
+  DELIVERED: [],
+  CANCELLED: [],
+  REQUIRES_RECONCILIATION: ['CANCELLED'],
 }
 
 function normalizeOrderStatus(val) {
@@ -97,6 +117,7 @@ export function formatAdminOrder(order) {
     originalPrice: item.originalPrice ?? null,
     discount: item.discount ?? null,
     quantity: item.quantity,
+    restoredQuantity: item.restoredQuantity || 0,
     lineTotal: item.lineTotal,
     image: item.image || '',
     storefront: item.storefront || '',
@@ -373,6 +394,32 @@ export async function updateAdminOrder(req, res, next) {
 
       // Append status history only when status has actually changed
       if (order.status !== targetStatus) {
+        // Phase 2.4H Order State Machine Invariant Protection
+        const allowedTransitions = ALLOWED_ORDER_TRANSITIONS[order.status] || []
+        if (!allowedTransitions.includes(targetStatus)) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'invalid_order_transition',
+              message: `Illegal state transition: order in state "${order.status}" cannot transition to "${targetStatus}".`,
+            },
+          })
+        }
+
+        // Unpaid order cannot be moved to CONFIRMED without valid payment
+        if (targetStatus === 'CONFIRMED' && order.paymentStatus !== 'SUCCESS' && order.paymentStatus !== 'PAID') {
+          const targetPayment = paymentStatus !== undefined ? normalizePaymentStatus(paymentStatus) : null
+          if (targetPayment !== 'SUCCESS' && targetPayment !== 'PAID') {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'unpaid_order_confirmation',
+                message: 'Cannot confirm order without valid successful payment.',
+              },
+            })
+          }
+        }
+
         order.history = order.history || []
         order.history.push({
           status: targetStatus,
@@ -394,6 +441,15 @@ export async function updateAdminOrder(req, res, next) {
           error: {
             code: 'invalid_payment_status',
             message: `Invalid payment status: "${paymentStatus}". Supported values are PENDING, PAID, SUCCESS, FAILED, REFUNDED.`,
+          },
+        })
+      }
+      if ((order.paymentStatus === 'SUCCESS' || order.paymentStatus === 'PAID') && targetPayment === 'PENDING') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_payment_transition',
+            message: 'Cannot revert captured or successful payment back to PENDING.',
           },
         })
       }
@@ -509,6 +565,25 @@ export async function updateAdminOrder(req, res, next) {
 
     await order.save()
 
+    recordAuditLog({
+      action: 'ADMIN_ORDER_STATUS_CHANGE',
+      actorType: 'ADMIN',
+      actorId: req.user._id,
+      actorEmail: req.user.email,
+      resourceType: 'ORDER',
+      resourceId: String(order._id),
+      orderId: order._id,
+      result: 'SUCCESS',
+      metadata: {
+        orderNumber: order.orderNumber,
+        status: order.status,
+        paymentStatus: order.paymentStatus,
+        courier: order.courier,
+        trackingNumber: order.trackingNumber,
+      },
+      req,
+    })
+
     res.json({
       success: true,
       message: 'Order updated successfully.',
@@ -566,26 +641,378 @@ export async function cancelAdminOrder(req, res, next) {
       })
     }
 
-    order.status = 'CANCELLED'
-    order.history = order.history || []
-    order.history.push({
-      status: 'CANCELLED',
-      at: new Date(),
-      note: reason,
+    if (order.status === 'DELIVERED') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'cannot_cancel_delivered',
+          message: 'Delivered orders cannot be cancelled.',
+        },
+      })
+    }
+
+    // Transactional, safe cancellation with inventory restoration and retry loop for WriteConflict
+    let attempt = 0
+    const maxAttempts = 3
+    let liveOrder = null
+    let wasPaid = false
+
+    while (attempt < maxAttempts) {
+      attempt++
+      const session = await mongoose.startSession()
+      try {
+        session.startTransaction()
+
+        liveOrder = await Order.findById(order._id).session(session)
+        if (!liveOrder) {
+          await session.abortTransaction()
+          return res.status(404).json({
+            success: false,
+            error: { code: 'order_not_found', message: 'Order not found.' },
+          })
+        }
+
+        if (liveOrder.status === 'CANCELLED') {
+          await session.abortTransaction()
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'order_already_cancelled',
+              message: 'This order is already cancelled.',
+            },
+          })
+        }
+
+        if (liveOrder.status === 'DELIVERED') {
+          await session.abortTransaction()
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'cannot_cancel_delivered',
+              message: 'Delivered orders cannot be cancelled.',
+            },
+          })
+        }
+
+        // Safe Inventory Restoration Logic (Durable per-line accounting):
+        // Only restore stock if inventory was actually deducted.
+        // Compute remaining restorable quantity per line item to strictly prevent double-restoration.
+        if (liveOrder.inventoryDeducted === true) {
+          const itemsToRestore = []
+          for (const item of (liveOrder.items || [])) {
+            const ordered = Number(item.quantity) || 0
+            const alreadyRestored = Number(item.restoredQuantity) || 0
+            const remainingRestorable = Math.max(0, ordered - alreadyRestored)
+            if (remainingRestorable > 0) {
+              itemsToRestore.push({
+                productId: item.productId,
+                variantId: item.variantId,
+                quantity: remainingRestorable,
+              })
+              item.restoredQuantity = ordered
+            }
+          }
+
+          if (itemsToRestore.length > 0) {
+            const restoreRes = await restoreOrderInventory(itemsToRestore, session)
+            if (!restoreRes.success) {
+              throw new Error(`Inventory restoration failed: ${restoreRes.error}`)
+            }
+          }
+          liveOrder.inventoryRestored = true
+        }
+
+        // Payment Reconciliation Note (Phase 2.4B requirement):
+        // If money was captured, record reconciliation requirement without faking a refund.
+        wasPaid =
+          liveOrder.paymentStatus === 'SUCCESS' ||
+          liveOrder.paymentStatus === 'PAID' ||
+          liveOrder.paymentStatus === 'PARTIALLY_REFUNDED'
+        if (wasPaid) {
+          await Payment.updateOne(
+            { orderId: liveOrder._id },
+            {
+              $set: {
+                reconciliationReason:
+                  'Order cancelled by admin after payment capture; refund pending',
+              },
+            },
+            { session },
+          )
+        }
+
+        liveOrder.status = 'CANCELLED'
+        liveOrder.history = liveOrder.history || []
+        liveOrder.history.push({
+          status: 'CANCELLED',
+          at: new Date(),
+          note: reason,
+        })
+
+        await liveOrder.save({ session })
+        await session.commitTransaction()
+        break
+      } catch (txErr) {
+        await session.abortTransaction().catch(() => {})
+        const isTransient =
+          txErr.code === 112 ||
+          txErr.codeName === 'WriteConflict' ||
+          txErr.name === 'WriteConflict' ||
+          txErr.message?.includes('Write conflict') ||
+          txErr.errorLabels?.has?.('TransientTransactionError') ||
+          (Array.isArray(txErr.errorLabels) && txErr.errorLabels.includes('TransientTransactionError'))
+
+        if (isTransient && attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 40 * attempt))
+          continue
+        }
+        throw txErr
+      } finally {
+        await session.endSession().catch(() => {})
+      }
+    }
+
+    // Phase 2.4F Unified Paid Order Cancellation:
+    // If payment was captured and autoRefund is enabled (req.body.autoRefund === true || req.body.refund === true),
+    // execute unified initiateRefund via refundReconciliationService with source: 'cancellation'
+    let refundResult = null
+    const shouldAutoRefund = req.body?.autoRefund === true || req.body?.refund === true
+    if (wasPaid && shouldAutoRefund) {
+      const livePayment = await Payment.findOne({ orderId: liveOrder._id })
+      if (livePayment && livePayment.refundableAmount > 0) {
+        refundResult = await initiateRefund({
+          orderId: liveOrder._id,
+          amount: livePayment.refundableAmount,
+          reason: `Order cancelled by admin: ${reason}`,
+          user: req.user,
+          role: 'admin',
+          source: 'cancellation',
+          idempotencyKey: `cancel_rfnd_${liveOrder._id}`,
+        })
+      }
+    }
+
+    const populated = await Order.findById(liveOrder._id).populate(
+      'userId',
+      'name email phone role isActive',
+    )
+
+    recordAuditLog({
+      action: 'ADMIN_ORDER_CANCEL',
+      actorType: 'ADMIN',
+      actorId: req.user._id,
+      actorEmail: req.user.email,
+      resourceType: 'ORDER',
+      resourceId: String(liveOrder._id),
+      orderId: liveOrder._id,
+      result: 'SUCCESS',
+      reason,
+      metadata: {
+        orderNumber: liveOrder.orderNumber,
+        wasPaid,
+        refundInitiated: Boolean(refundResult),
+      },
+      req,
     })
 
-    // INVENTORY CRITICAL INSTRUCTION:
-    // Do NOT automatically restore inventory. Phase 1.5 order creation did NOT deduct
-    // stock from Products, so cancelling must NOT artificially increment product inventory.
-
-    await order.save()
-
-    res.json({
+    return res.json({
       success: true,
       message: 'Order cancelled successfully.',
-      order: formatAdminOrder(order),
+      order: formatAdminOrder(populated || liveOrder),
+      refund: refundResult?.refundDoc || refundResult?.refund || null,
     })
   } catch (err) {
     next(err)
   }
 }
+
+/**
+ * Administrative Payment Reconciliation (POST /api/admin/orders/:id/reconcile)
+ * Allows administrators to safely trigger an authoritative reconciliation against Razorpay.
+ */
+export async function reconcileAdminOrder(req, res, next) {
+  try {
+    const { id } = req.params
+    if (!id || !mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'invalid_order_id',
+          message: 'Valid order ID is required.',
+        },
+      })
+    }
+
+    const order = await Order.findById(id)
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'order_not_found',
+          message: 'Order not found.',
+        },
+      })
+    }
+
+    const reconResult = await reconcileOrderPayment({
+      orderId: order._id,
+      razorpayOrderId: order.razorpayOrderId,
+      force: true,
+    })
+
+    const refreshedOrder = await Order.findById(order._id).populate(
+      'userId',
+      'name email phone role isActive',
+    )
+    const payment = await Payment.findOne({ orderId: order._id }).sort({ createdAt: -1 })
+
+    // Safe sanitized payment details (zero secrets)
+    const safePayment = payment
+      ? {
+          id: String(payment._id),
+          status: payment.status,
+          amount: payment.amount,
+          currency: payment.currency,
+          gateway: payment.gateway,
+          razorpayOrderId: payment.razorpayOrderId,
+          razorpayPaymentId: payment.razorpayPaymentId,
+          verified: payment.verified,
+          gatewayStatus: payment.gatewayStatus,
+          errorReason: payment.errorReason,
+          reconciliationReason: payment.reconciliationReason,
+          reconciliationAttempts: payment.reconciliationAttempts,
+          lastReconciledAt: payment.lastReconciledAt,
+        }
+      : null
+
+    return res.status(200).json({
+      success: true,
+      message: reconResult.message,
+      reconciled: reconResult.reconciled,
+      classification: reconResult.classification,
+      data: {
+        order: formatAdminOrder(refreshedOrder || order),
+        payment: safePayment,
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+// 7. POST /api/admin/orders/:id/refund (Phase 2.4E)
+export async function refundAdminOrder(req, res, next) {
+  try {
+    const rawId = String(req.params.id || '').trim()
+
+    if (!mongoose.isValidObjectId(rawId)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'invalid_order_id',
+          message: 'Invalid MongoDB ObjectId provided.',
+        },
+      })
+    }
+
+    const { amount, reason, idempotencyKey, items, speed } = req.body || {}
+    if (!reason || typeof reason !== 'string' || !reason.trim()) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'refund_reason_required',
+          message: 'A refund reason is required for administrative refunds.',
+        },
+      })
+    }
+
+    const clientKey =
+      typeof idempotencyKey === 'string' && idempotencyKey.trim()
+        ? idempotencyKey.trim()
+        : req.headers['x-idempotency-key'] || null
+
+    const result = await initiateRefund({
+      orderId: rawId,
+      amount,
+      reason,
+      user: req.user,
+      role: 'admin',
+      source: 'admin_request',
+      idempotencyKey: clientKey,
+      items: Array.isArray(items) ? items : [],
+      speed: speed === 'optimum' ? 'optimum' : 'normal',
+    })
+
+    if (!result || !result.success) {
+      return res.status(result?.statusCode || 400).json({
+        success: false,
+        error: {
+          code: result?.errorCode || 'refund_failed',
+          message: result?.message || 'Refund could not be initiated.',
+        },
+      })
+    }
+
+    const refreshedOrder = await Order.findById(rawId)
+
+    return res.status(200).json({
+      success: true,
+      message: result.message,
+      idempotent: Boolean(result.idempotent),
+      data: {
+        refund: {
+          id: result.refund?._id,
+          orderId: result.refund?.orderId,
+          amount: result.refund?.amount,
+          currency: result.refund?.currency,
+          status: result.refund?.status,
+          reason: result.refund?.reason,
+          razorpayRefundId: result.refund?.razorpayRefundId || null,
+          isFullRefund: result.refund?.isFullRefund,
+          inventoryRestorationStatus: result.refund?.inventoryRestorationStatus,
+          createdAt: result.refund?.createdAt,
+        },
+        order: formatAdminOrder(refreshedOrder),
+      },
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+// 8. POST /api/admin/orders/:id/refunds/:refundId/reconcile (Phase 2.4E)
+export async function reconcileAdminRefund(req, res, next) {
+  try {
+    const rawRefundId = String(req.params.refundId || '').trim()
+
+    if (!mongoose.isValidObjectId(rawRefundId)) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'invalid_refund_id',
+          message: 'Invalid MongoDB ObjectId provided.',
+        },
+      })
+    }
+
+    const result = await reconcileRefundRecord({ refundId: rawRefundId, force: true })
+    if (!result.success) {
+      return res.status(result.statusCode || 500).json({
+        success: false,
+        error: {
+          code: 'reconciliation_failed',
+          message: result.message || 'Failed to reconcile refund record.',
+        },
+      })
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: result.refund,
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+

@@ -4,18 +4,51 @@ import { Product } from '../models/Product.js'
 /**
  * Atomically deducts inventory for items in an order.
  * Ensures variants.qty >= requested and base qty >= requested.
- * If any item fails, rolls back previously deducted items.
- * Uses replica set session/transaction if available.
+ * If external session is provided, executes within that transaction.
+ * Otherwise creates its own session/transaction.
  *
  * @param {Array<{productId: string|mongoose.Types.ObjectId, variantId: string, quantity: number, productName?: string}>} items
+ * @param {mongoose.ClientSession|null} [externalSession=null]
  * @returns {Promise<{success: boolean, error?: string}>}
  */
-export async function deductOrderInventory(items) {
+export async function deductOrderInventory(items, externalSession = null) {
   if (!Array.isArray(items) || items.length === 0) {
     return { success: true }
   }
 
-  // Attempt MongoDB Transaction first if session is available
+  // If caller provided an active transaction session, use it directly
+  if (externalSession) {
+    for (const item of items) {
+      const qtyToDeduct = Number(item.quantity) || 0
+      if (qtyToDeduct <= 0) continue
+
+      const res = await Product.updateOne(
+        {
+          _id: item.productId,
+          'variants.variantId': item.variantId,
+          'variants.qty': { $gte: qtyToDeduct },
+          qty: { $gte: qtyToDeduct },
+        },
+        {
+          $inc: {
+            'variants.$.qty': -qtyToDeduct,
+            qty: -qtyToDeduct,
+          },
+        },
+        { session: externalSession },
+      )
+
+      if (res.modifiedCount !== 1) {
+        return {
+          success: false,
+          error: `Insufficient stock for item "${item.productName || item.productId}" (variant: ${item.variantId})`,
+        }
+      }
+    }
+    return { success: true }
+  }
+
+  // Standalone execution: attempt MongoDB Transaction if replica set is available
   let session = null
   try {
     session = await mongoose.startSession()
@@ -30,7 +63,6 @@ export async function deductOrderInventory(items) {
         const qtyToDeduct = Number(item.quantity) || 0
         if (qtyToDeduct <= 0) continue
 
-        // Atomic update checking current stock >= requested quantity
         const res = await Product.updateOne(
           {
             _id: item.productId,
@@ -110,4 +142,45 @@ export async function deductOrderInventory(items) {
   }
 
   return { success: true }
+}
+
+/**
+ * Atomically restores inventory for items in an order (e.g. upon admin cancellation of a paid/confirmed order).
+ * If external session is provided, executes within that transaction.
+ *
+ * @param {Array<{productId: string|mongoose.Types.ObjectId, variantId: string, quantity: number}>} items
+ * @param {mongoose.ClientSession|null} [externalSession=null]
+ * @returns {Promise<{success: boolean, error?: string}>}
+ */
+export async function restoreOrderInventory(items, externalSession = null) {
+  if (!Array.isArray(items) || items.length === 0) {
+    return { success: true }
+  }
+
+  const sessionOptions = externalSession ? { session: externalSession } : undefined
+
+  try {
+    for (const item of items) {
+      const qtyToRestore = Number(item.quantity) || 0
+      if (qtyToRestore <= 0) continue
+
+      await Product.updateOne(
+        {
+          _id: item.productId,
+          'variants.variantId': item.variantId,
+        },
+        {
+          $inc: {
+            'variants.$.qty': qtyToRestore,
+            qty: qtyToRestore,
+          },
+        },
+        sessionOptions,
+      )
+    }
+
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message, rawError: err }
+  }
 }

@@ -9,6 +9,7 @@ import {
   deleteAdminProduct,
   updateAdminProductInventory,
 } from '../controllers/adminProductController.js'
+import { adminMutationRateLimiter } from '../middleware/rateLimiter.js'
 
 const adminProductsRouter = Router()
 
@@ -19,19 +20,19 @@ adminProductsRouter.use(requireAuth, requireAdmin)
 adminProductsRouter.get('/', getAdminProducts)
 
 // POST /api/admin/products - Create a new product
-adminProductsRouter.post('/', createAdminProduct)
+adminProductsRouter.post('/', adminMutationRateLimiter, createAdminProduct)
 
 // GET /api/admin/products/:id - Get product details by ID or slug
 adminProductsRouter.get('/:id', getAdminProductById)
 
 // PUT & PATCH /api/admin/products/:id - Update product details
-adminProductsRouter.put('/:id', updateAdminProduct)
-adminProductsRouter.patch('/:id', updateAdminProduct)
+adminProductsRouter.put('/:id', adminMutationRateLimiter, updateAdminProduct)
+adminProductsRouter.patch('/:id', adminMutationRateLimiter, updateAdminProduct)
 
 // DELETE /api/admin/products/:id - Safe deactivation (isActive: false)
-adminProductsRouter.delete('/:id', deleteAdminProduct)
+adminProductsRouter.delete('/:id', adminMutationRateLimiter, deleteAdminProduct)
 
 // PATCH /api/admin/products/:id/inventory - Update variant or product stock quantity
-adminProductsRouter.patch('/:id/inventory', updateAdminProductInventory)
+adminProductsRouter.patch('/:id/inventory', adminMutationRateLimiter, updateAdminProductInventory)
 
 export { adminProductsRouter }

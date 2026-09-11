@@ -72,6 +72,11 @@ const orderItemSnapshotSchema = new mongoose.Schema(
       required: [true, 'Quantity is required'],
       min: [1, 'Quantity must be at least 1'],
     },
+    restoredQuantity: {
+      type: Number,
+      default: 0,
+      min: [0, 'Restored quantity cannot be negative'],
+    },
     lineTotal: {
       type: Number,
       required: [true, 'Line total is required'],
@@ -195,7 +200,7 @@ const orderSchema = new mongoose.Schema(
       type: String,
       required: true,
       enum: {
-        values: ['PENDING', 'SUCCESS', 'PAID', 'FAILED', 'REFUNDED'],
+        values: ['PENDING', 'SUCCESS', 'PAID', 'FAILED', 'PARTIALLY_REFUNDED', 'REFUNDED', 'REQUIRES_RECONCILIATION'],
         message: '{VALUE} is not a valid payment status',
       },
       default: 'PENDING',
@@ -208,14 +213,24 @@ const orderSchema = new mongoose.Schema(
     paymentId: {
       type: String,
       default: null,
+      unique: true,
       sparse: true,
       index: true,
     },
     razorpayOrderId: {
       type: String,
       default: null,
+      unique: true,
       sparse: true,
       index: true,
+    },
+    inventoryDeducted: {
+      type: Boolean,
+      default: false,
+    },
+    inventoryRestored: {
+      type: Boolean,
+      default: false,
     },
     courier: {
       type: String,

@@ -9,11 +9,14 @@ import {
 } from '../config/razorpay.js'
 import { deductOrderInventory } from '../utils/inventory.js'
 import { formatPublicOrder } from './orderController.js'
+import { fulfillRazorpayPayment } from '../services/paymentFulfillmentService.js'
+import { recordAuditLog } from '../services/auditLogger.js'
 
 /**
  * 1. Create Razorpay Order (POST /api/payments/razorpay/create-order)
  * Protected by requireAuth.
  * Resolves authoritative SV Hub Order, verifies ownership, and creates a Razorpay order in INR paise.
+ * Concurrency protected to prevent duplicate Razorpay orders.
  */
 export async function createRazorpayOrder(req, res, next) {
   try {
@@ -85,56 +88,144 @@ export async function createRazorpayOrder(req, res, next) {
 
     const amountInPaise = Math.round(order.totalAmount * 100)
 
-    // Check if an existing valid payment record can be safely reused
+    // Check if an existing valid active payment record can be safely reused
     let payment = await Payment.findOne({
       orderId: order._id,
       status: { $in: ['CREATED', 'PENDING'] },
+      amount: order.totalAmount,
+      razorpayOrderId: { $exists: true, $ne: null, $not: /^CREATING_/ },
     }).sort({ createdAt: -1 })
 
-    let razorpayOrderId = payment?.razorpayOrderId || null
+    let razorpayOrderId = payment?.razorpayOrderId || (order.razorpayOrderId && !order.razorpayOrderId.startsWith('CREATING_') ? order.razorpayOrderId : null)
 
     if (!razorpayOrderId) {
-      const razorpay = getRazorpayClient()
-      const options = {
-        amount: amountInPaise,
-        currency: 'INR',
-        receipt: String(order.orderNumber).slice(0, 40),
-        notes: {
-          svHubOrderId: String(order._id),
-          orderNumber: order.orderNumber,
-          userId: String(req.user._id),
+      // Clear stale creation lock (> 30 seconds old) if previous worker crashed
+      if (order.razorpayOrderId && order.razorpayOrderId.startsWith('CREATING_')) {
+        const lockTimestamp = parseInt(order.razorpayOrderId.replace('CREATING_', ''), 10)
+        if (Number.isFinite(lockTimestamp) && Date.now() - lockTimestamp > 30000) {
+          await Order.updateOne(
+            { _id: order._id, razorpayOrderId: order.razorpayOrderId },
+            { $set: { razorpayOrderId: null } },
+          )
+        }
+      }
+
+      // Concurrency protection: Atomically flag order as CREATING to prevent race condition
+      const lockedOrder = await Order.findOneAndUpdate(
+        {
+          _id: order._id,
+          status: 'PENDING_PAYMENT',
+          $or: [
+            { razorpayOrderId: null },
+            { razorpayOrderId: { $exists: false } },
+            { razorpayOrderId: { $regex: '^CREATING_' } },
+          ],
         },
+        { $set: { razorpayOrderId: `CREATING_${Date.now()}` } },
+        { new: false },
+      )
+
+      if (
+        lockedOrder &&
+        lockedOrder.razorpayOrderId &&
+        lockedOrder.razorpayOrderId.startsWith('CREATING_')
+      ) {
+        const lockAge = Date.now() - parseInt(lockedOrder.razorpayOrderId.replace('CREATING_', ''), 10)
+        // If another request just started within 30s, wait briefly for it to complete
+        if (lockAge <= 30000) {
+          for (let attempt = 0; attempt < 15; attempt++) {
+            await new Promise((r) => setTimeout(r, 200))
+            const refreshed = await Order.findById(order._id)
+            if (
+              refreshed?.razorpayOrderId &&
+              !refreshed.razorpayOrderId.startsWith('CREATING_')
+            ) {
+              razorpayOrderId = refreshed.razorpayOrderId
+              payment = await Payment.findOne({ orderId: order._id, razorpayOrderId })
+              break
+            }
+          }
+        }
       }
 
-      let rzpOrder
-      try {
-        rzpOrder = await razorpay.orders.create(options)
-      } catch (rzpErr) {
-        const errorDesc = rzpErr.error?.description || rzpErr.message || 'Razorpay order creation failed'
-        return res.status(rzpErr.statusCode || 502).json({
-          success: false,
-          error: {
-            code: rzpErr.error?.code || 'razorpay_api_error',
-            message: `Payment gateway error: ${errorDesc}. Please check your Razorpay Test Mode credentials in svhub-backend/.env.`,
+      if (!razorpayOrderId) {
+        const razorpay = getRazorpayClient()
+        const options = {
+          amount: amountInPaise,
+          currency: 'INR',
+          receipt: String(order.orderNumber).slice(0, 40),
+          notes: {
+            svHubOrderId: String(order._id),
+            orderNumber: order.orderNumber,
+            userId: String(req.user._id),
           },
-        })
+        }
+
+        let rzpOrder
+        try {
+          rzpOrder = await razorpay.orders.create(options)
+        } catch (rzpErr) {
+          // Release lock on gateway error
+          await Order.updateOne(
+            { _id: order._id, razorpayOrderId: { $regex: '^CREATING_' } },
+            { $set: { razorpayOrderId: null } },
+          )
+          const errorDesc =
+            rzpErr.error?.description ||
+            rzpErr.message ||
+            'Razorpay order creation failed'
+          return res.status(rzpErr.statusCode || 502).json({
+            success: false,
+            error: {
+              code: rzpErr.error?.code || 'razorpay_api_error',
+              message: `Payment gateway error: ${errorDesc}. Please check your Razorpay Test Mode credentials in svhub-backend/.env.`,
+            },
+          })
+        }
+        razorpayOrderId = rzpOrder.id
+
+        // Upsert or create Payment
+        payment = await Payment.findOneAndUpdate(
+          { orderId: order._id, razorpayOrderId },
+          {
+            $setOnInsert: {
+              orderId: order._id,
+              userId: req.user._id,
+              amount: order.totalAmount,
+              capturedAmount: 0,
+              refundedAmount: 0,
+              refundableAmount: 0,
+              currency: 'INR',
+              gateway: 'razorpay',
+              status: 'CREATED',
+              razorpayOrderId,
+            },
+          },
+          { upsert: true, new: true },
+        )
+
+        order.razorpayOrderId = razorpayOrderId
+        order.paymentMethod = 'razorpay'
+        await order.save()
       }
-      razorpayOrderId = rzpOrder.id
-
-      payment = await Payment.create({
-        orderId: order._id,
-        userId: req.user._id,
-        amount: order.totalAmount,
-        currency: 'INR',
-        gateway: 'razorpay',
-        status: 'CREATED',
-        razorpayOrderId,
-      })
-
-      order.razorpayOrderId = razorpayOrderId
-      order.paymentMethod = 'razorpay'
-      await order.save()
     }
+
+    recordAuditLog({
+      action: 'PAYMENT_ORDER_CREATED',
+      actorType: 'CUSTOMER',
+      actorId: req.user._id,
+      actorEmail: req.user.email,
+      resourceType: 'PAYMENT',
+      resourceId: razorpayOrderId,
+      orderId: order._id,
+      result: 'SUCCESS',
+      metadata: {
+        orderNumber: order.orderNumber,
+        razorpayOrderId,
+        amountInPaise,
+      },
+      req,
+    })
 
     return res.status(200).json({
       success: true,
@@ -160,264 +251,90 @@ export async function createRazorpayOrder(req, res, next) {
 /**
  * 2. Verify Razorpay Payment (POST /api/payments/razorpay/verify)
  * Protected by requireAuth.
- * Validates HMAC SHA-256 signature, matches server-stored order ID, enforces amount authority,
- * applies atomic inventory deduction, marks Payment PAID, marks Order CONFIRMED, and clears cart.
+ * Delegates directly to the single authoritative paymentFulfillmentService engine.
  */
 export async function verifyRazorpayPayment(req, res, next) {
   try {
-    const {
+    const { orderId, amount } = req.body || {}
+    const razorpayOrderId = req.body?.razorpay_order_id || req.body?.razorpayOrderId
+    const razorpayPaymentId = req.body?.razorpay_payment_id || req.body?.razorpayPaymentId
+    const razorpaySignature = req.body?.razorpay_signature || req.body?.razorpaySignature
+
+    const result = await fulfillRazorpayPayment({
       orderId,
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+      user: req.user,
       amount,
-    } = req.body || {}
-
-    if (!orderId || !razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'missing_payment_fields',
-          message: 'orderId, razorpay_order_id, razorpay_payment_id, and razorpay_signature are required.',
-        },
-      })
-    }
-
-    const order = await Order.findById(orderId)
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'order_not_found',
-          message: 'Order not found.',
-        },
-      })
-    }
-
-    // Access Control: Verify authenticated user owns the order
-    if (String(order.userId) !== String(req.user._id)) {
-      return res.status(403).json({
-        success: false,
-        error: {
-          code: 'forbidden_order',
-          message: 'You do not have permission to verify payment for this order.',
-        },
-      })
-    }
-
-    // Find server-side payment record
-    const payment = await Payment.findOne({
-      orderId: order._id,
-      razorpayOrderId: razorpay_order_id,
-    }) || await Payment.findOne({ orderId: order._id }).sort({ createdAt: -1 })
-
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'payment_record_not_found',
-          message: 'Server-side payment record not found for this order.',
-        },
-      })
-    }
-
-    // Section 17: Match client razorpay_order_id with server-stored Razorpay Order ID
-    if (payment.razorpayOrderId !== razorpay_order_id) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'mismatched_razorpay_order_id',
-          message: 'Razorpay order ID does not match the server-stored payment record.',
-        },
-      })
-    }
-
-    // Section 20: Idempotency & Duplicate Payment Protection
-    if (
-      order.status === 'CONFIRMED' &&
-      (order.paymentStatus === 'SUCCESS' || order.paymentStatus === 'PAID') &&
-      payment.verified === true &&
-      payment.razorpayPaymentId === razorpay_payment_id
-    ) {
-      return res.status(200).json({
-        success: true,
-        message: 'Payment already verified and order confirmed.',
-        data: {
-          order: formatPublicOrder(order),
-          payment: {
-            id: String(payment._id),
-            status: payment.status,
-            gateway: payment.gateway,
-            razorpayOrderId: payment.razorpayOrderId,
-            razorpayPaymentId: payment.razorpayPaymentId,
-            amount: payment.amount,
-            currency: payment.currency,
-          },
-          idempotent: true,
-        },
-      })
-    }
-
-    if (order.status === 'CONFIRMED') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'order_already_confirmed',
-          message: 'This order is already confirmed.',
-        },
-      })
-    }
-
-    // Section 18: Verify Payment Amount Authority (Total in Paise)
-    const expectedPaise = Math.round(order.totalAmount * 100)
-    if (amount !== undefined && amount !== null) {
-      const submitted = Number(amount)
-      if (submitted !== expectedPaise && submitted !== order.totalAmount) {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'amount_mismatch',
-            message: 'Submitted payment amount does not match authoritative order total.',
-          },
-        })
-      }
-    }
-
-    // Section 16: Cryptographic HMAC SHA256 Signature Verification
-    // Use the SERVER-STORED razorpayOrderId + '|' + razorpay_payment_id
-    const isSignatureValid = verifyRazorpaySignature({
-      serverOrderId: payment.razorpayOrderId,
-      paymentId: razorpay_payment_id,
-      signature: razorpay_signature,
+      isWebhook: false,
     })
 
-    if (!isSignatureValid) {
-      payment.status = 'FAILED'
-      payment.razorpayPaymentId = razorpay_payment_id
-      payment.razorpaySignature = razorpay_signature
-      payment.errorReason = 'Cryptographic signature verification failed'
-      await payment.save()
-
-      order.paymentStatus = 'FAILED'
-      await order.save()
-
-      return res.status(400).json({
+    if (!result.success) {
+      recordAuditLog({
+        action: 'PAYMENT_VERIFICATION_FAILURE',
+        actorType: 'CUSTOMER',
+        actorId: req.user._id,
+        actorEmail: req.user.email,
+        resourceType: 'PAYMENT',
+        resourceId: razorpayPaymentId,
+        orderId,
+        result: 'FAILURE',
+        reason: result.message || 'Payment verification failed',
+        metadata: {
+          errorCode: result.errorCode,
+          razorpayOrderId,
+          razorpayPaymentId,
+        },
+        req,
+      })
+      return res.status(result.statusCode || 400).json({
         success: false,
         error: {
-          code: 'invalid_signature',
-          message: 'Cryptographic signature verification failed.',
+          code: result.errorCode || 'payment_verification_failed',
+          message: result.message || 'Payment verification failed.',
         },
+        ...(result.data ? { data: result.data } : {}),
       })
     }
 
-    // Section 19: Verify Payment Status with Razorpay API where appropriate
-    if (isRazorpayConfigured() && process.env.SKIP_RZP_FETCH !== 'true') {
-      try {
-        const razorpay = getRazorpayClient()
-        const rzpPayment = await razorpay.payments.fetch(razorpay_payment_id)
-        if (rzpPayment) {
-          if (rzpPayment.order_id && rzpPayment.order_id !== payment.razorpayOrderId) {
-            return res.status(400).json({
-              success: false,
-              error: {
-                code: 'order_id_mismatch',
-                message: 'Razorpay payment record does not match the server order ID.',
-              },
-            })
-          }
-          if (rzpPayment.amount && rzpPayment.amount !== expectedPaise) {
-            return res.status(400).json({
-              success: false,
-              error: {
-                code: 'amount_mismatch',
-                message: 'Razorpay payment amount does not match authoritative order amount.',
-              },
-            })
-          }
-        }
-      } catch (rzpErr) {
-        if (process.env.STRICT_RZP_FETCH === 'true') {
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'razorpay_api_error',
-              message: `Razorpay API verification failed: ${rzpErr.message}`,
-            },
-          })
-        }
-      }
-    }
-
-    // Section 21: Atomic Inventory Deduction
-    const invResult = await deductOrderInventory(order.items)
-    if (!invResult.success) {
-      payment.status = 'FAILED'
-      payment.errorReason = `Inventory deduction failed: ${invResult.error}`
-      payment.razorpayPaymentId = razorpay_payment_id
-      payment.razorpaySignature = razorpay_signature
-      payment.verified = true
-      await payment.save()
-
-      order.status = 'REQUIRES_RECONCILIATION'
-      order.paymentStatus = 'SUCCESS'
-      order.paymentId = razorpay_payment_id
-      order.history.push({
-        status: 'REQUIRES_RECONCILIATION',
-        at: new Date(),
-        note: `Payment verified (${razorpay_payment_id}), but inventory deduction failed: ${invResult.error}. Manual reconciliation required.`,
-      })
-      await order.save()
-
-      return res.status(409).json({
-        success: false,
-        error: {
-          code: 'inventory_conflict',
-          message: 'Payment received, but items are out of stock. Order requires reconciliation.',
-        },
-        data: {
-          orderId: String(order._id),
-          orderNumber: order.orderNumber,
-          orderStatus: order.status,
-        },
-      })
-    }
-
-    // Section 22: Atomic Payment Completion
-    payment.status = 'SUCCESS'
-    payment.razorpayPaymentId = razorpay_payment_id
-    payment.razorpaySignature = razorpay_signature
-    payment.verified = true
-    payment.errorReason = null
-    await payment.save()
-
-    order.status = 'CONFIRMED'
-    order.paymentStatus = 'SUCCESS'
-    order.paymentId = razorpay_payment_id
-    order.paymentMethod = 'razorpay'
-    order.history.push({
-      status: 'CONFIRMED',
-      at: new Date(),
-      note: `Payment verified via Razorpay (${razorpay_payment_id}); stock deducted and order confirmed.`,
+    recordAuditLog({
+      action: 'PAYMENT_VERIFICATION_SUCCESS',
+      actorType: 'CUSTOMER',
+      actorId: req.user._id,
+      actorEmail: req.user.email,
+      resourceType: 'PAYMENT',
+      resourceId: razorpayPaymentId,
+      orderId: result.order?._id,
+      paymentId: result.payment?._id,
+      result: 'SUCCESS',
+      metadata: {
+        orderNumber: result.order?.orderNumber,
+        razorpayOrderId,
+        razorpayPaymentId,
+        amount: result.payment?.amount,
+        idempotent: Boolean(result.idempotent),
+      },
+      req,
     })
-    await order.save()
-
-    // Section 23: Cart Clearing strictly on successful verification and order confirmation
-    await Cart.updateOne({ userId: order.userId }, { $set: { items: [] } })
 
     return res.status(200).json({
       success: true,
-      message: 'Payment verified and order confirmed successfully.',
+      message: result.idempotent
+        ? 'Payment already verified and order confirmed.'
+        : 'Payment verified and order confirmed successfully.',
       data: {
-        order: formatPublicOrder(order),
+        order: formatPublicOrder(result.order),
         payment: {
-          id: String(payment._id),
-          status: payment.status,
-          gateway: payment.gateway,
-          razorpayOrderId: payment.razorpayOrderId,
-          razorpayPaymentId: payment.razorpayPaymentId,
-          amount: payment.amount,
-          currency: payment.currency,
+          id: String(result.payment._id),
+          status: result.payment.status,
+          gateway: result.payment.gateway,
+          razorpayOrderId: result.payment.razorpayOrderId,
+          razorpayPaymentId: result.payment.razorpayPaymentId,
+          amount: result.payment.amount,
+          currency: result.payment.currency,
         },
+        ...(result.idempotent ? { idempotent: true } : {}),
       },
     })
   } catch (err) {
@@ -463,6 +380,19 @@ export async function recordPaymentFailure(req, res, next) {
         { $set: { status: 'FAILED', errorReason: errorReason || 'Payment failed or cancelled' } },
       )
     }
+
+    recordAuditLog({
+      action: 'PAYMENT_VERIFICATION_FAILURE',
+      actorType: 'CUSTOMER',
+      actorId: req.user._id,
+      actorEmail: req.user.email,
+      resourceType: 'PAYMENT',
+      resourceId: razorpay_order_id || null,
+      orderId: order._id,
+      result: 'FAILURE',
+      reason: errorReason || 'Customer reported payment failure or cancelled checkout',
+      req,
+    })
 
     return res.status(200).json({
       success: true,

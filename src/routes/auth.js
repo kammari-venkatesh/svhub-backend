@@ -6,6 +6,13 @@ import { User } from '../models/User.js'
 import { isFirebaseAdminConfigured, verifyGoogleIdToken } from '../config/firebase.js'
 import { requireAuth } from '../middleware/requireAuth.js'
 import {
+  authLoginRateLimiter,
+  authRegisterRateLimiter,
+  authGoogleRateLimiter,
+  authPasswordResetRateLimiter,
+} from '../middleware/rateLimiter.js'
+import { recordAuditLog } from '../services/auditLogger.js'
+import {
   emailError,
   fail,
   jwtSecret,
@@ -41,7 +48,7 @@ function createResetToken() {
 }
 
 // 1. Register new customer account
-authRouter.post('/register', async (req, res, next) => {
+authRouter.post('/register', authRegisterRateLimiter, async (req, res, next) => {
   try {
     const nameIssue = nameError(req.body?.name)
     const emailIssue = emailError(req.body?.email)
@@ -71,6 +78,17 @@ authRouter.post('/register', async (req, res, next) => {
       status: 'ACTIVE',
     })
 
+    recordAuditLog({
+      action: 'REGISTER',
+      actorType: 'CUSTOMER',
+      actorId: user._id,
+      actorEmail: user.email,
+      resourceType: 'USER',
+      resourceId: String(user._id),
+      result: 'SUCCESS',
+      req,
+    })
+
     return res.status(201).json({
       success: true,
       user: user.toPublic(),
@@ -83,7 +101,7 @@ authRouter.post('/register', async (req, res, next) => {
 })
 
 // 2. Customer & Staff Login (Canonical Unified Login)
-authRouter.post('/login', async (req, res, next) => {
+authRouter.post('/login', authLoginRateLimiter, async (req, res, next) => {
   try {
     const identifier = String(req.body?.identifier ?? req.body?.email ?? '')
     const identifierIssue = loginIdentifierError(identifier)
@@ -95,6 +113,17 @@ authRouter.post('/login', async (req, res, next) => {
       : await User.findOne({ phone: normalizePhone(identifier) })
 
     if (user && !user.passwordHash) {
+      recordAuditLog({
+        action: 'LOGIN_FAILURE',
+        actorType: 'CUSTOMER',
+        actorId: user._id,
+        actorEmail: user.email,
+        resourceType: 'USER',
+        resourceId: String(user._id),
+        result: 'FAILURE',
+        reason: 'Google-only account attempted password login',
+        req,
+      })
       return fail(
         res,
         401,
@@ -106,6 +135,15 @@ authRouter.post('/login', async (req, res, next) => {
     const ok = user ? await bcrypt.compare(String(req.body.password), user.passwordHash) : false
 
     if (!user || !ok) {
+      recordAuditLog({
+        action: 'LOGIN_FAILURE',
+        actorType: 'ANONYMOUS',
+        actorEmail: identifier.includes('@') ? normalizeEmail(identifier) : null,
+        resourceType: 'USER',
+        result: 'FAILURE',
+        reason: 'Invalid credentials',
+        req,
+      })
       return fail(
         res,
         401,
@@ -116,6 +154,17 @@ authRouter.post('/login', async (req, res, next) => {
 
     const status = String(user.status || 'ACTIVE').toUpperCase()
     if (status === 'SUSPENDED' || status === 'INACTIVE') {
+      recordAuditLog({
+        action: 'LOGIN_FAILURE',
+        actorType: 'CUSTOMER',
+        actorId: user._id,
+        actorEmail: user.email,
+        resourceType: 'USER',
+        resourceId: String(user._id),
+        result: 'DENIED',
+        reason: `Account status is ${status}`,
+        req,
+      })
       return fail(
         res,
         403,
@@ -123,6 +172,17 @@ authRouter.post('/login', async (req, res, next) => {
         'Your account has been deactivated. Please contact customer care.',
       )
     }
+
+    recordAuditLog({
+      action: 'LOGIN_SUCCESS',
+      actorType: String(user.role || '').toUpperCase() === 'ADMIN' ? 'ADMIN' : 'CUSTOMER',
+      actorId: user._id,
+      actorEmail: user.email,
+      resourceType: 'USER',
+      resourceId: String(user._id),
+      result: 'SUCCESS',
+      req,
+    })
 
     return res.json({
       success: true,
@@ -136,7 +196,7 @@ authRouter.post('/login', async (req, res, next) => {
 })
 
 // 3. Google OAuth Firebase Authentication
-authRouter.post('/google', async (req, res, next) => {
+authRouter.post('/google', authGoogleRateLimiter, async (req, res, next) => {
   try {
     const idToken = String(req.body?.idToken || '')
     if (!idToken) {
@@ -151,6 +211,14 @@ authRouter.post('/google', async (req, res, next) => {
       decoded = await verifyGoogleIdToken(idToken)
     } catch (error) {
       console.error('Google token verify failed:', error.message)
+      recordAuditLog({
+        action: 'LOGIN_FAILURE',
+        actorType: 'ANONYMOUS',
+        resourceType: 'USER',
+        result: 'FAILURE',
+        reason: 'Google token verification failed',
+        req,
+      })
       return fail(res, 401, 'invalid_token', 'Google Sign-In could not be verified. Please try again.')
     }
 
@@ -187,8 +255,31 @@ authRouter.post('/google', async (req, res, next) => {
 
     const status = String(user.status || 'ACTIVE').toUpperCase()
     if (status === 'SUSPENDED' || status === 'INACTIVE') {
+      recordAuditLog({
+        action: 'LOGIN_FAILURE',
+        actorType: 'CUSTOMER',
+        actorId: user._id,
+        actorEmail: user.email,
+        resourceType: 'USER',
+        resourceId: String(user._id),
+        result: 'DENIED',
+        reason: `Account status is ${status}`,
+        req,
+      })
       return fail(res, 403, 'account_inactive', 'Your account has been deactivated. Please contact support.')
     }
+
+    recordAuditLog({
+      action: created ? 'REGISTER' : 'GOOGLE_LOGIN',
+      actorType: 'CUSTOMER',
+      actorId: user._id,
+      actorEmail: user.email,
+      resourceType: 'USER',
+      resourceId: String(user._id),
+      result: 'SUCCESS',
+      metadata: { method: 'GOOGLE' },
+      req,
+    })
 
     return res.json({
       success: true,
@@ -283,7 +374,7 @@ authRouter.patch('/profile', requireAuth, async (req, res, next) => {
 })
 
 // 6. Request Password Reset Link
-authRouter.post('/forgot-password', async (req, res, next) => {
+authRouter.post('/forgot-password', authPasswordResetRateLimiter, async (req, res, next) => {
   try {
     const emailIssue = emailError(req.body?.email)
     if (emailIssue) return fail(res, 400, 'invalid_email', emailIssue)
@@ -292,6 +383,15 @@ authRouter.post('/forgot-password', async (req, res, next) => {
     const user = await User.findOne({ email })
 
     if (!user) {
+      recordAuditLog({
+        action: 'PASSWORD_RESET_REQUEST',
+        actorType: 'ANONYMOUS',
+        actorEmail: email,
+        resourceType: 'USER',
+        result: 'FAILURE',
+        reason: 'Account not found for email',
+        req,
+      })
       return fail(res, 404, 'unknown_email', 'We couldn’t find an account with that email.')
     }
 
@@ -300,9 +400,16 @@ authRouter.post('/forgot-password', async (req, res, next) => {
     user.resetTokenExpires = new Date(Date.now() + TOKEN_TTL_MS)
     await user.save()
 
-    const origin = process.env.CLIENT_URL || process.env.CLIENT_ORIGIN || 'http://localhost:5173'
-    const resetUrl = `${origin}/reset-password?token=${token}`
-    console.log(`Password reset requested for ${email}: ${resetUrl}`)
+    recordAuditLog({
+      action: 'PASSWORD_RESET_REQUEST',
+      actorType: 'CUSTOMER',
+      actorId: user._id,
+      actorEmail: user.email,
+      resourceType: 'USER',
+      resourceId: String(user._id),
+      result: 'SUCCESS',
+      req,
+    })
 
     return res.json({
       success: true,
@@ -342,7 +449,7 @@ authRouter.get('/reset-password', async (req, res, next) => {
 })
 
 // 8. Confirm Password Reset
-authRouter.post('/reset-password', async (req, res, next) => {
+authRouter.post('/reset-password', authPasswordResetRateLimiter, async (req, res, next) => {
   try {
     const token = String(req.body?.token || '')
     const passIssue = passwordError(req.body?.password)
@@ -355,6 +462,14 @@ authRouter.post('/reset-password', async (req, res, next) => {
     })
 
     if (!user) {
+      recordAuditLog({
+        action: 'PASSWORD_RESET_SUCCESS',
+        actorType: 'ANONYMOUS',
+        resourceType: 'USER',
+        result: 'FAILURE',
+        reason: 'Expired or invalid reset token',
+        req,
+      })
       return fail(res, 400, 'expired_token', 'This reset link is invalid or has expired. Request a new one.')
     }
 
@@ -362,6 +477,17 @@ authRouter.post('/reset-password', async (req, res, next) => {
     user.resetTokenHash = ''
     user.resetTokenExpires = null
     await user.save()
+
+    recordAuditLog({
+      action: 'PASSWORD_RESET_SUCCESS',
+      actorType: 'CUSTOMER',
+      actorId: user._id,
+      actorEmail: user.email,
+      resourceType: 'USER',
+      resourceId: String(user._id),
+      result: 'SUCCESS',
+      req,
+    })
 
     return res.json({
       success: true,
@@ -375,6 +501,16 @@ authRouter.post('/reset-password', async (req, res, next) => {
 
 // 9. Logout
 authRouter.post('/logout', requireAuth, (req, res) => {
+  recordAuditLog({
+    action: 'LOGOUT',
+    actorType: String(req.user?.role || '').toUpperCase() === 'ADMIN' ? 'ADMIN' : 'CUSTOMER',
+    actorId: req.user?._id,
+    actorEmail: req.user?.email,
+    resourceType: 'USER',
+    resourceId: String(req.user?._id),
+    result: 'SUCCESS',
+    req,
+  })
   return res.json({
     success: true,
     message: 'Logged out successfully.',

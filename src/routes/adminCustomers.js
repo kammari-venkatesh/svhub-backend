@@ -6,6 +6,7 @@ import {
   getAdminCustomerById,
   updateAdminCustomer,
 } from '../controllers/adminCustomerController.js'
+import { adminMutationRateLimiter } from '../middleware/rateLimiter.js'
 
 const adminCustomersRouter = Router()
 
@@ -19,6 +20,6 @@ adminCustomersRouter.get('/', getAdminCustomers)
 adminCustomersRouter.get('/:id', getAdminCustomerById)
 
 // PATCH /api/admin/customers/:id
-adminCustomersRouter.patch('/:id', updateAdminCustomer)
+adminCustomersRouter.patch('/:id', adminMutationRateLimiter, updateAdminCustomer)
 
 export { adminCustomersRouter }
