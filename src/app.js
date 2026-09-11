@@ -27,21 +27,29 @@ const allowedOrigins = [
   env.CLIENT_URL,
   'http://localhost:5173',
   'http://127.0.0.1:5173',
+  'https://svhub-frontend-nine.vercel.app',
 ].filter(Boolean)
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true
+  if (allowedOrigins.includes(origin)) return true
+  if (origin.endsWith('.vercel.app')) return true
+  if (/^https?:\/\/localhost(:\d+)?$/.test(origin)) return true
+  if (/^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin)) return true
+  return false
+}
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, server-to-server)
-      if (!origin) return callback(null, true)
-      if (allowedOrigins.includes(origin) || env.NODE_ENV === 'development') {
+      if (isAllowedOrigin(origin) || env.NODE_ENV === 'development') {
         return callback(null, true)
       }
       return callback(new Error('Blocked by CORS policy'))
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Request-Id', 'X-Razorpay-Signature'],
   }),
 )
 

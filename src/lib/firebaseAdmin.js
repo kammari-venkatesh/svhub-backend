@@ -97,8 +97,12 @@ export async function verifyGoogleIdToken(idToken) {
   }
 
   if (hasServiceAccount()) {
-    const auth = await getFirebaseAdminAuth()
-    return auth.verifyIdToken(idToken)
+    try {
+      const auth = await getFirebaseAdminAuth()
+      return await auth.verifyIdToken(idToken)
+    } catch (adminErr) {
+      console.warn('Firebase Admin SDK verification failed, falling back to public cert verification:', adminErr.message)
+    }
   }
 
   return verifyWithPublicKeys(idToken)
