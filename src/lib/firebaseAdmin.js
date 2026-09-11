@@ -1,5 +1,3 @@
-import { cert, getApps, initializeApp } from 'firebase-admin/app'
-import { getAuth } from 'firebase-admin/auth'
 import jwt from 'jsonwebtoken'
 
 const CERTS_URL = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
@@ -72,10 +70,13 @@ async function verifyWithPublicKeys(idToken) {
   }
 }
 
-export function getFirebaseAdminAuth() {
+export async function getFirebaseAdminAuth() {
   if (!hasServiceAccount()) {
     throw new Error('Firebase Admin service account is not configured')
   }
+
+  const { cert, getApps, initializeApp } = await import('firebase-admin/app')
+  const { getAuth } = await import('firebase-admin/auth')
 
   if (!getApps().length) {
     initializeApp({
@@ -96,7 +97,8 @@ export async function verifyGoogleIdToken(idToken) {
   }
 
   if (hasServiceAccount()) {
-    return getFirebaseAdminAuth().verifyIdToken(idToken)
+    const auth = await getFirebaseAdminAuth()
+    return auth.verifyIdToken(idToken)
   }
 
   return verifyWithPublicKeys(idToken)
