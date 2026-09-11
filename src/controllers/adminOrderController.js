@@ -9,6 +9,7 @@ import {
   reconcileRefundRecord,
 } from '../services/refundReconciliationService.js'
 import { recordAuditLog } from '../services/auditLogger.js'
+import { cancelOrder } from '../services/orderCancellationService.js'
 
 const ORDER_STATUS_MAP = {
   PENDING_PAYMENT: 'PENDING_PAYMENT',
@@ -147,6 +148,7 @@ export function formatAdminOrder(order) {
     status: h.status,
     at: h.at,
     note: h.note || '',
+    cancelledBy: h.cancelledBy || null,
   }))
 
   return {
@@ -178,6 +180,8 @@ export function formatAdminOrder(order) {
     amount: doc.totalAmount,
     status: doc.status,
     displayStatus: statusTitleMap[doc.status] || doc.status,
+    cancellationReason: (Array.isArray(doc.history) ? [...doc.history].reverse().find((h) => h.status === 'CANCELLED')?.note : null) || null,
+    cancelledByRole: (Array.isArray(doc.history) ? [...doc.history].reverse().find((h) => h.status === 'CANCELLED')?.cancelledBy : null) || null,
     paymentStatus: canonicalPaymentStatus,
     rawPaymentStatus: doc.paymentStatus,
     displayPaymentStatus: paymentTitleMap[doc.paymentStatus] || doc.paymentStatus,
@@ -420,6 +424,39 @@ export async function updateAdminOrder(req, res, next) {
           }
         }
 
+        // If setting status to CANCELLED via generic update, delegate to authoritative cancellation service
+        if (targetStatus === 'CANCELLED') {
+          const cancelResult = await cancelOrder({
+            orderId: order._id,
+            user: req.user,
+            role: 'ADMIN',
+            reason: typeof notes === 'string' && notes.trim() ? notes.trim() : 'Order cancelled by SV Hub Administration',
+            autoRefund: true,
+            req,
+          })
+
+          if (!cancelResult.success) {
+            return res.status(cancelResult.statusCode || 400).json({
+              success: false,
+              error: {
+                code: cancelResult.errorCode || cancelResult.code || 'cancellation_failed',
+                message: cancelResult.message || 'Failed to cancel order.',
+              },
+            })
+          }
+
+          const freshOrder = await Order.findById(order._id)
+            .populate('userId', 'name email phone role isActive')
+            .populate('items.productId', 'name slug price images stock')
+          
+          return res.json({
+            success: true,
+            message: 'Order cancelled successfully.',
+            order: formatAdminOrder(freshOrder || cancelResult.order),
+            refund: cancelResult.refund || null,
+          })
+        }
+
         order.history = order.history || []
         order.history.push({
           status: targetStatus,
@@ -609,217 +646,37 @@ export async function cancelAdminOrder(req, res, next) {
       })
     }
 
-    const order = await Order.findById(rawId).populate('userId', 'name email phone role isActive')
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'order_not_found',
-          message: 'Order not found.',
-        },
-      })
-    }
+    const { reason, autoRefund = true } = req.body || {}
 
-    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : ''
-    if (!reason) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'cancellation_reason_required',
-          message: 'A cancellation reason is required.',
-        },
-      })
-    }
-
-    if (order.status === 'CANCELLED') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'order_already_cancelled',
-          message: 'This order is already cancelled.',
-        },
-      })
-    }
-
-    if (order.status === 'DELIVERED') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'cannot_cancel_delivered',
-          message: 'Delivered orders cannot be cancelled.',
-        },
-      })
-    }
-
-    // Transactional, safe cancellation with inventory restoration and retry loop for WriteConflict
-    let attempt = 0
-    const maxAttempts = 3
-    let liveOrder = null
-    let wasPaid = false
-
-    while (attempt < maxAttempts) {
-      attempt++
-      const session = await mongoose.startSession()
-      try {
-        session.startTransaction()
-
-        liveOrder = await Order.findById(order._id).session(session)
-        if (!liveOrder) {
-          await session.abortTransaction()
-          return res.status(404).json({
-            success: false,
-            error: { code: 'order_not_found', message: 'Order not found.' },
-          })
-        }
-
-        if (liveOrder.status === 'CANCELLED') {
-          await session.abortTransaction()
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'order_already_cancelled',
-              message: 'This order is already cancelled.',
-            },
-          })
-        }
-
-        if (liveOrder.status === 'DELIVERED') {
-          await session.abortTransaction()
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'cannot_cancel_delivered',
-              message: 'Delivered orders cannot be cancelled.',
-            },
-          })
-        }
-
-        // Safe Inventory Restoration Logic (Durable per-line accounting):
-        // Only restore stock if inventory was actually deducted.
-        // Compute remaining restorable quantity per line item to strictly prevent double-restoration.
-        if (liveOrder.inventoryDeducted === true) {
-          const itemsToRestore = []
-          for (const item of (liveOrder.items || [])) {
-            const ordered = Number(item.quantity) || 0
-            const alreadyRestored = Number(item.restoredQuantity) || 0
-            const remainingRestorable = Math.max(0, ordered - alreadyRestored)
-            if (remainingRestorable > 0) {
-              itemsToRestore.push({
-                productId: item.productId,
-                variantId: item.variantId,
-                quantity: remainingRestorable,
-              })
-              item.restoredQuantity = ordered
-            }
-          }
-
-          if (itemsToRestore.length > 0) {
-            const restoreRes = await restoreOrderInventory(itemsToRestore, session)
-            if (!restoreRes.success) {
-              throw new Error(`Inventory restoration failed: ${restoreRes.error}`)
-            }
-          }
-          liveOrder.inventoryRestored = true
-        }
-
-        // Payment Reconciliation Note (Phase 2.4B requirement):
-        // If money was captured, record reconciliation requirement without faking a refund.
-        wasPaid =
-          liveOrder.paymentStatus === 'SUCCESS' ||
-          liveOrder.paymentStatus === 'PAID' ||
-          liveOrder.paymentStatus === 'PARTIALLY_REFUNDED'
-        if (wasPaid) {
-          await Payment.updateOne(
-            { orderId: liveOrder._id },
-            {
-              $set: {
-                reconciliationReason:
-                  'Order cancelled by admin after payment capture; refund pending',
-              },
-            },
-            { session },
-          )
-        }
-
-        liveOrder.status = 'CANCELLED'
-        liveOrder.history = liveOrder.history || []
-        liveOrder.history.push({
-          status: 'CANCELLED',
-          at: new Date(),
-          note: reason,
-        })
-
-        await liveOrder.save({ session })
-        await session.commitTransaction()
-        break
-      } catch (txErr) {
-        await session.abortTransaction().catch(() => {})
-        const isTransient =
-          txErr.code === 112 ||
-          txErr.codeName === 'WriteConflict' ||
-          txErr.name === 'WriteConflict' ||
-          txErr.message?.includes('Write conflict') ||
-          txErr.errorLabels?.has?.('TransientTransactionError') ||
-          (Array.isArray(txErr.errorLabels) && txErr.errorLabels.includes('TransientTransactionError'))
-
-        if (isTransient && attempt < maxAttempts) {
-          await new Promise((r) => setTimeout(r, 40 * attempt))
-          continue
-        }
-        throw txErr
-      } finally {
-        await session.endSession().catch(() => {})
-      }
-    }
-
-    // Phase 2.4F Unified Paid Order Cancellation:
-    // If payment was captured and autoRefund is enabled (req.body.autoRefund === true || req.body.refund === true),
-    // execute unified initiateRefund via refundReconciliationService with source: 'cancellation'
-    let refundResult = null
-    const shouldAutoRefund = req.body?.autoRefund === true || req.body?.refund === true
-    if (wasPaid && shouldAutoRefund) {
-      const livePayment = await Payment.findOne({ orderId: liveOrder._id })
-      if (livePayment && livePayment.refundableAmount > 0) {
-        refundResult = await initiateRefund({
-          orderId: liveOrder._id,
-          amount: livePayment.refundableAmount,
-          reason: `Order cancelled by admin: ${reason}`,
-          user: req.user,
-          role: 'admin',
-          source: 'cancellation',
-          idempotencyKey: `cancel_rfnd_${liveOrder._id}`,
-        })
-      }
-    }
-
-    const populated = await Order.findById(liveOrder._id).populate(
-      'userId',
-      'name email phone role isActive',
-    )
-
-    recordAuditLog({
-      action: 'ADMIN_ORDER_CANCEL',
-      actorType: 'ADMIN',
-      actorId: req.user._id,
-      actorEmail: req.user.email,
-      resourceType: 'ORDER',
-      resourceId: String(liveOrder._id),
-      orderId: liveOrder._id,
-      result: 'SUCCESS',
+    const result = await cancelOrder({
+      orderId: rawId,
+      user: req.user,
+      role: 'ADMIN',
       reason,
-      metadata: {
-        orderNumber: liveOrder.orderNumber,
-        wasPaid,
-        refundInitiated: Boolean(refundResult),
-      },
+      autoRefund,
       req,
     })
 
-    return res.json({
+    if (!result.success) {
+      return res.status(result.statusCode || 400).json({
+        success: false,
+        error: {
+          code: result.errorCode || result.code || 'cancellation_failed',
+          message: result.message || 'Failed to cancel order.',
+        },
+      })
+    }
+
+    const populated = await Order.findById(result.order._id)
+      .populate('userId', 'name email phone role isActive')
+      .populate('items.productId', 'name slug price images stock')
+
+    return res.status(result.statusCode || 200).json({
       success: true,
-      message: 'Order cancelled successfully.',
-      order: formatAdminOrder(populated || liveOrder),
-      refund: refundResult?.refundDoc || refundResult?.refund || null,
+      idempotent: Boolean(result.idempotent),
+      message: result.message || 'Order cancelled successfully.',
+      order: formatAdminOrder(populated || result.order),
+      refund: result.refund || null,
     })
   } catch (err) {
     next(err)

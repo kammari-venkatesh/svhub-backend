@@ -9,8 +9,13 @@ import { Counter } from '../models/Counter.js'
 import { restoreOrderInventory } from '../utils/inventory.js'
 import { initiateRefund } from '../services/refundReconciliationService.js'
 import { recordAuditLog } from '../services/auditLogger.js'
+import { cancelOrder } from '../services/orderCancellationService.js'
 
 export function formatPublicOrder(order) {
+  const cancelHistory = Array.isArray(order.history)
+    ? [...order.history].reverse().find((h) => h.status === 'CANCELLED')
+    : null
+
   return {
     id: String(order._id),
     orderNumber: order.orderNumber,
@@ -40,6 +45,7 @@ export function formatPublicOrder(order) {
     discount: order.discount,
     totalAmount: order.totalAmount,
     status: order.status,
+    cancellationReason: cancelHistory?.note || null,
     paymentStatus: order.paymentStatus,
     paymentMethod: order.paymentMethod || null,
     paymentId: order.paymentId || null,
@@ -448,233 +454,33 @@ export async function getCustomerOrderById(req, res, next) {
 export async function cancelCustomerOrder(req, res, next) {
   try {
     const rawId = String(req.params.id || '').trim()
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : ''
 
-    if (!mongoose.isValidObjectId(rawId)) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'invalid_order_id',
-          message: 'Invalid MongoDB ObjectId provided.',
-        },
-      })
-    }
-
-    const order = await Order.findOne({ _id: rawId, userId: req.user._id })
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'order_not_found',
-          message: 'Order not found or does not belong to your account.',
-        },
-      })
-    }
-
-    const reason =
-      typeof req.body?.reason === 'string' && req.body.reason.trim()
-        ? req.body.reason.trim()
-        : 'Cancelled by customer'
-
-    if (order.status === 'CANCELLED') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'order_already_cancelled',
-          message: 'This order is already cancelled.',
-        },
-      })
-    }
-
-    if (order.status === 'DELIVERED') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'cannot_cancel_delivered',
-          message: 'Delivered orders cannot be cancelled.',
-        },
-      })
-    }
-
-    if (order.status === 'SHIPPED' || order.status === 'OUT_FOR_DELIVERY') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'cannot_cancel_in_transit',
-          message:
-            'Orders that have already shipped cannot be cancelled directly. Please contact support or initiate a return/refund upon delivery.',
-        },
-      })
-    }
-
-    // Transactional, safe cancellation with inventory restoration and retry loop for WriteConflict
-    let attempt = 0
-    const maxAttempts = 3
-    let liveOrder = null
-    let wasPaid = false
-
-    while (attempt < maxAttempts) {
-      attempt++
-      const session = await mongoose.startSession()
-      try {
-        session.startTransaction()
-
-        liveOrder = await Order.findOne({ _id: order._id, userId: req.user._id }).session(session)
-        if (!liveOrder) {
-          await session.abortTransaction()
-          return res.status(404).json({
-            success: false,
-            error: { code: 'order_not_found', message: 'Order not found.' },
-          })
-        }
-
-        if (liveOrder.status === 'CANCELLED') {
-          await session.abortTransaction()
-          return res.status(400).json({
-            success: false,
-            error: { code: 'order_already_cancelled', message: 'This order is already cancelled.' },
-          })
-        }
-
-        if (
-          liveOrder.status === 'DELIVERED' ||
-          liveOrder.status === 'SHIPPED' ||
-          liveOrder.status === 'OUT_FOR_DELIVERY'
-        ) {
-          await session.abortTransaction()
-          if (liveOrder.status === 'DELIVERED') {
-            return res.status(400).json({
-              success: false,
-              error: {
-                code: 'cannot_cancel_delivered',
-                message: 'Delivered orders cannot be cancelled.',
-              },
-            })
-          }
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'cannot_cancel_in_transit',
-              message: `Orders that have already shipped cannot be cancelled directly.`,
-            },
-          })
-        }
-
-        // Safe Inventory Restoration Logic (Durable per-line accounting):
-        if (liveOrder.inventoryDeducted === true) {
-          const itemsToRestore = []
-          for (const item of liveOrder.items || []) {
-            const ordered = Number(item.quantity) || 0
-            const alreadyRestored = Number(item.restoredQuantity) || 0
-            const remainingRestorable = Math.max(0, ordered - alreadyRestored)
-            if (remainingRestorable > 0) {
-              itemsToRestore.push({
-                productId: item.productId,
-                variantId: item.variantId,
-                quantity: remainingRestorable,
-              })
-              item.restoredQuantity = ordered
-            }
-          }
-
-          if (itemsToRestore.length > 0) {
-            const restoreRes = await restoreOrderInventory(itemsToRestore, session)
-            if (!restoreRes.success) {
-              throw new Error(`Inventory restoration failed: ${restoreRes.error}`)
-            }
-          }
-          liveOrder.inventoryRestored = true
-        }
-
-        wasPaid =
-          liveOrder.paymentStatus === 'SUCCESS' ||
-          liveOrder.paymentStatus === 'PAID' ||
-          liveOrder.paymentStatus === 'PARTIALLY_REFUNDED'
-
-        if (wasPaid) {
-          await Payment.updateOne(
-            { orderId: liveOrder._id },
-            {
-              $set: {
-                reconciliationReason: 'Order cancelled by customer; refund pending',
-              },
-            },
-            { session },
-          )
-        }
-
-        liveOrder.status = 'CANCELLED'
-        liveOrder.history = liveOrder.history || []
-        liveOrder.history.push({
-          status: 'CANCELLED',
-          at: new Date(),
-          note: reason,
-        })
-
-        await liveOrder.save({ session })
-        await session.commitTransaction()
-        break
-      } catch (txErr) {
-        await session.abortTransaction().catch(() => {})
-        const isTransient =
-          txErr.code === 112 ||
-          txErr.codeName === 'WriteConflict' ||
-          txErr.name === 'WriteConflict' ||
-          txErr.message?.includes('Write conflict') ||
-          txErr.errorLabels?.has?.('TransientTransactionError') ||
-          (Array.isArray(txErr.errorLabels) && txErr.errorLabels.includes('TransientTransactionError'))
-
-        if (isTransient && attempt < maxAttempts) {
-          await new Promise((r) => setTimeout(r, 40 * attempt))
-          continue
-        }
-        throw txErr
-      } finally {
-        await session.endSession().catch(() => {})
-      }
-    }
-
-    // Phase 2.4F Unified Customer Refund on Paid Cancellation
-    let refundResult = null
-    if (wasPaid) {
-      const livePayment = await Payment.findOne({ orderId: liveOrder._id })
-      if (livePayment && livePayment.refundableAmount > 0) {
-        refundResult = await initiateRefund({
-          orderId: liveOrder._id,
-          amount: livePayment.refundableAmount,
-          reason: `Order cancelled by customer: ${reason}`,
-          user: req.user,
-          role: 'customer',
-          source: 'cancellation',
-          idempotencyKey: `cust_cancel_rfnd_${liveOrder._id}`,
-        })
-      }
-    }
-
-    const updatedOrder = await Order.findById(liveOrder._id)
-
-    recordAuditLog({
-      action: 'ORDER_CANCELLED',
-      actorType: 'CUSTOMER',
-      actorId: req.user._id,
-      actorEmail: req.user.email,
-      resourceType: 'ORDER',
-      resourceId: String(liveOrder._id),
-      orderId: liveOrder._id,
-      result: 'SUCCESS',
+    const result = await cancelOrder({
+      orderId: rawId,
+      user: req.user,
+      role: 'customer',
       reason,
-      metadata: {
-        orderNumber: liveOrder.orderNumber,
-        wasPaid,
-        refundInitiated: Boolean(refundResult),
-      },
+      autoRefund: true,
       req,
     })
 
-    return res.json({
+    if (!result.success) {
+      return res.status(result.statusCode || 400).json({
+        success: false,
+        error: {
+          code: result.errorCode || 'cancellation_failed',
+          message: result.message || 'Order could not be cancelled.',
+        },
+      })
+    }
+
+    return res.status(200).json({
       success: true,
-      message: 'Order cancelled successfully.',
-      data: formatPublicOrder(updatedOrder || liveOrder),
-      refund: refundResult?.refundDoc || refundResult?.refund || null,
+      message: result.message,
+      idempotent: Boolean(result.idempotent),
+      data: formatPublicOrder(result.order),
+      refund: result.refund || null,
     })
   } catch (err) {
     next(err)

@@ -101,6 +101,7 @@ const orderStatusHistorySchema = new mongoose.Schema(
     status: { type: String, required: true },
     at: { type: Date, default: Date.now },
     note: { type: String, default: '' },
+    cancelledBy: { type: String, default: null }, // 'admin' | 'customer' — only set on CANCELLED events
   },
   { _id: false },
 )

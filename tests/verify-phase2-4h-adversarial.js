@@ -1435,21 +1435,49 @@ async function runAdversarialSuite() {
     })
     assert(resK1.status === 404, 'K.1: Customer B cancelling Customer A order returns 404')
 
-    // 92. Cancellation of an already CANCELLED order returns 400
+    // 92. Idempotent cancellation: already-CANCELLED order must return HTTP 200 with idempotent: true.
+    // The implementation intentionally does NOT error on duplicate cancellations to allow
+    // safe client retries. Business operations (inventory, refund, payment) must NOT repeat.
     const cancelFirst = await request(`/api/orders/${orderK.id}/cancel`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${customerAToken}` },
       body: { reason: 'Legitimate cancellation' },
     })
-    assert(cancelFirst.status === 200, 'K.2: First cancellation succeeds')
+    assert(cancelFirst.status === 200, 'K.2: First cancellation succeeds with HTTP 200')
+
+    // Capture pre-second-cancel state for invariant checks
+    const refundCountBeforeK3 = await Refund.countDocuments({ orderId: orderK.id })
+    const stockBeforeK3 = (await Product.findById(testProduct._id)).variants[0].qty
+    const paymentBeforeK3 = await Payment.findOne({ orderId: orderK.id })
 
     const cancelSecond = await request(`/api/orders/${orderK.id}/cancel`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${customerAToken}` },
       body: { reason: 'Duplicate cancellation' },
     })
-    assert(cancelSecond.status === 400, 'K.3: Duplicate cancellation returns 400')
-    assert(cancelSecond.data.error.code === 'order_already_cancelled', 'K.4: Code is order_already_cancelled')
+    // K.3 — Idempotency contract: duplicate cancellation returns HTTP 200
+    assert(cancelSecond.status === 200, 'K.3: Duplicate cancellation returns idempotent HTTP 200')
+    // K.4 — Response must carry the idempotent: true flag
+    assert(cancelSecond.data?.idempotent === true, 'K.4: Duplicate cancellation response carries idempotent: true')
+
+    // K.4a — Order must remain CANCELLED and NOT be resurrected or modified
+    const orderAfterK3 = await Order.findById(orderK.id)
+    assert(orderAfterK3.status === 'CANCELLED', 'K.4a: Order remains CANCELLED after idempotent call')
+
+    // K.4b — No second refund must be created
+    const refundCountAfterK3 = await Refund.countDocuments({ orderId: orderK.id })
+    assert(refundCountAfterK3 === refundCountBeforeK3, 'K.4b: No duplicate refund created on repeated cancellation')
+
+    // K.4c — Inventory must NOT be restored a second time
+    const stockAfterK3 = (await Product.findById(testProduct._id)).variants[0].qty
+    assert(stockAfterK3 === stockBeforeK3, 'K.4c: Inventory NOT double-restored on idempotent cancellation')
+
+    // K.4d — Payment totals unchanged
+    const paymentAfterK3 = await Payment.findOne({ orderId: orderK.id })
+    if (paymentBeforeK3 && paymentAfterK3) {
+      assert(paymentAfterK3.refundedAmount === paymentBeforeK3.refundedAmount, 'K.4d: Payment refundedAmount unchanged on idempotent cancellation')
+      assert(paymentAfterK3.refundableAmount === paymentBeforeK3.refundableAmount, 'K.4d: Payment refundableAmount unchanged on idempotent cancellation')
+    }
 
     // 93. Cancellation of a DELIVERED order returns 400
     const orderKDelivered = await helperCreateOrder(testCustomerA, customerAToken)
