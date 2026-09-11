@@ -5,7 +5,7 @@ const CERTS_URL = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken
 let certCache = { expires: 0, certs: null }
 
 function projectId() {
-  return process.env.FIREBASE_PROJECT_ID || ''
+  return process.env.FIREBASE_PROJECT_ID || 'sv-hub-8de4c'
 }
 
 function privateKey() {
