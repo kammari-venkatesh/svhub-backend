@@ -46,13 +46,15 @@ export function errorHandler(err, req, res, next) {
   }
 
   // Generic internal server error
-  console.error('Unhandled server error:', err)
+  console.error(`[SERVER_ERROR] ${req?.method || 'UNKNOWN'} ${req?.originalUrl || req?.url || ''}:`, err)
 
-  const isDev = env.NODE_ENV === 'development'
+  const isProd = env.NODE_ENV === 'production'
+  const message = err.message || 'Something went wrong. Please try again.'
+
   return res.status(err.status || 500).json({
     success: false,
     code: err.code || 'server_error',
-    message: isDev ? err.message : 'Something went wrong. Please try again.',
-    ...(isDev && err.stack ? { stack: err.stack } : {}),
+    message,
+    ...(!isProd && err.stack ? { stack: err.stack } : {}),
   })
 }
