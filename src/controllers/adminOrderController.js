@@ -54,6 +54,34 @@ function normalizePaymentStatus(val) {
   return PAYMENT_STATUS_MAP[cleaned] || null
 }
 
+function validateTrackingUrl(raw) {
+  let trimmed = String(raw || '').trim()
+  if (!trimmed) return { valid: false, error: 'Tracking URL is required when marking an order as Shipped.' }
+  if (trimmed.length > 2048) return { valid: false, error: 'Tracking URL must not exceed 2048 characters.' }
+
+  // Auto-prefix protocol if missing (e.g. www.delhivery.com/track/123 or delhivery.com)
+  if (!/^https?:\/\//i.test(trimmed)) {
+    if (/^[a-z0-9+-.]+:/i.test(trimmed)) {
+      return { valid: false, error: 'Only http:// and https:// URLs are allowed.' }
+    }
+    trimmed = `https://${trimmed}`
+  }
+
+  try {
+    const parsed = new URL(trimmed)
+    const SAFE = ['http:', 'https:']
+    if (!SAFE.includes(parsed.protocol)) {
+      return { valid: false, error: `Tracking URL protocol "${parsed.protocol}" is not allowed. Only http and https are permitted.` }
+    }
+    if (!parsed.hostname || !parsed.hostname.includes('.')) {
+      return { valid: false, error: 'Tracking URL must be a valid web domain address.' }
+    }
+  } catch {
+    return { valid: false, error: 'Tracking URL is not a valid web URL.' }
+  }
+  return { valid: true, url: trimmed }
+}
+
 function escapeRegex(text) {
   return String(text).replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')
 }
@@ -191,6 +219,7 @@ export function formatAdminOrder(order) {
     razorpayOrderId: doc.razorpayOrderId || null,
     courier: doc.courier || null,
     trackingNumber: doc.trackingNumber || null,
+    trackingUrl: doc.trackingUrl || null,
     notes: doc.notes || '',
     expectedDeliveryDate:
       doc.expectedDeliveryDate ||
@@ -381,7 +410,7 @@ export async function updateAdminOrder(req, res, next) {
       })
     }
 
-    const { status, paymentStatus, courier, trackingNumber, notes, expectedDeliveryDate } = req.body || {}
+    const { status, paymentStatus, courier, trackingNumber, trackingUrl, notes, expectedDeliveryDate } = req.body || {}
 
     // Whitelist and validate Order Status
     if (status !== undefined) {
@@ -398,6 +427,30 @@ export async function updateAdminOrder(req, res, next) {
 
       // Append status history only when status has actually changed
       if (order.status !== targetStatus) {
+        // Shipment info is required when transitioning TO Shipped
+        if (targetStatus === 'SHIPPED') {
+          const providerRaw = courier !== undefined ? courier : order.courier
+          if (!providerRaw || typeof providerRaw !== 'string' || !String(providerRaw).trim()) {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'shipment_info_required',
+                message: 'Delivery Provider (courier) is required when marking an order as Shipped.',
+              },
+            })
+          }
+          const urlRaw = trackingUrl !== undefined ? trackingUrl : order.trackingUrl
+          const urlCheck = validateTrackingUrl(urlRaw)
+          if (!urlCheck.valid) {
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'shipment_info_required',
+                message: urlCheck.error,
+              },
+            })
+          }
+        }
         // Phase 2.4H Order State Machine Invariant Protection
         const allowedTransitions = ALLOWED_ORDER_TRANSITIONS[order.status] || []
         if (!allowedTransitions.includes(targetStatus)) {
@@ -582,6 +635,33 @@ export async function updateAdminOrder(req, res, next) {
       }
     }
 
+    // Whitelist and validate Tracking URL
+    if (trackingUrl !== undefined) {
+      if (trackingUrl === null || trackingUrl === '') {
+        order.trackingUrl = null
+      } else if (typeof trackingUrl === 'string') {
+        const urlCheck = validateTrackingUrl(trackingUrl)
+        if (!urlCheck.valid) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'invalid_tracking_url',
+              message: urlCheck.error,
+            },
+          })
+        }
+        order.trackingUrl = urlCheck.url
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'invalid_tracking_url',
+            message: 'Tracking URL must be a string or null.',
+          },
+        })
+      }
+    }
+
     // Whitelist and sanitize Notes
     if (notes !== undefined) {
       if (typeof notes === 'string') {
@@ -617,6 +697,7 @@ export async function updateAdminOrder(req, res, next) {
         paymentStatus: order.paymentStatus,
         courier: order.courier,
         trackingNumber: order.trackingNumber,
+        trackingUrl: order.trackingUrl,
       },
       req,
     })

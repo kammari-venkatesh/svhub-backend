@@ -132,7 +132,12 @@ test('3. Status progression via admin API: CONFIRMED->SHIPPED->OUT_FOR_DELIVERY-
     { raw: 'DELIVERED', display: 'Delivered' },
   ]
   for (const { raw, display } of stages) {
-    const { status, body } = await api('PATCH', '/api/admin/orders/' + String(_order._id), { status: raw }, adminToken)
+    const payload = { status: raw }
+    if (raw === 'SHIPPED') {
+      payload.courier = 'Delhivery'
+      payload.trackingUrl = 'https://delhivery.com/track/123'
+    }
+    const { status, body } = await api('PATCH', '/api/admin/orders/' + String(_order._id), payload, adminToken)
     assert.equal(status, 200, raw + ' -> HTTP ' + status + ': ' + JSON.stringify(body?.error))
     assert.equal(body.order.status, raw, raw + ' status mismatch: got ' + body.order.status)
     assert.equal(body.order.displayStatus, display, raw + ' displayStatus mismatch: got ' + body.order.displayStatus)

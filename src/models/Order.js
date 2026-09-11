@@ -241,6 +241,12 @@ const orderSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    trackingUrl: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: [2048, 'Tracking URL must not exceed 2048 characters'],
+    },
     notes: {
       type: String,
       default: '',

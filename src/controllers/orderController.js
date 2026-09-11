@@ -52,6 +52,7 @@ export function formatPublicOrder(order) {
     razorpayOrderId: order.razorpayOrderId || null,
     courier: order.courier || null,
     trackingNumber: order.trackingNumber || null,
+    trackingUrl: order.trackingUrl || null,
     notes: order.notes || '',
     expectedDeliveryDate:
       order.expectedDeliveryDate ||
