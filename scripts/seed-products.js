@@ -80,6 +80,51 @@ const canonicalCategories = [
     active: true,
     sortOrder: 4,
   },
+  {
+    name: 'Native Rice',
+    slug: 'native-rice',
+    storefront: 'nutri-hub',
+    description: 'Indigenous grains grown with care for everyday pots of rice, kanji and festive meals.',
+    image: img.farmland,
+    active: true,
+    sortOrder: 5,
+  },
+  {
+    name: 'Handmade Soaps',
+    slug: 'handmade-soaps',
+    storefront: 'self-care',
+    description: 'Herbal soaps made by hand with traditional ingredients for everyday care.',
+    image: img.wellness,
+    active: true,
+    sortOrder: 6,
+  },
+  {
+    name: 'Traditional Sweets',
+    slug: 'sweets',
+    storefront: 'nutri-hub',
+    description: 'Time-honoured sweets made in small batches with native ingredients.',
+    image: img.cooking,
+    active: true,
+    sortOrder: 7,
+  },
+  {
+    name: 'Traditional Savouries',
+    slug: 'savouries',
+    storefront: 'nutri-hub',
+    description: 'Crisp, homemade-style snacks for tea-time and everyday sharing.',
+    image: img.cooking,
+    active: true,
+    sortOrder: 8,
+  },
+  {
+    name: 'Daily Meals',
+    slug: 'daily-meals',
+    storefront: 'nutri-hub',
+    description: 'Wholesome prepared meals rooted in South Indian kitchens.',
+    image: img.cooking,
+    active: true,
+    sortOrder: 9,
+  },
 ]
 
 // ─── Helper for product variants ─────────────────────────────────────────────
@@ -947,13 +992,8 @@ async function main() {
     }
   }
 
-  // 3. Deactivate legacy mock products
-  console.log('\n--- 3. Deactivating Legacy Products ---')
-  const legacyResult = await Product.updateMany(
-    { slug: { $nin: Array.from(canonicalSlugs) }, isActive: true },
-    { $set: { isActive: false } }
-  )
-  console.log(`Deactivated legacy products count: ${legacyResult.modifiedCount}`)
+  // 3. Ensure all catalog products remain active
+  console.log('\n--- 3. Verifying Catalog Products ---')
 
   // 4. Summary Verification
   const activeProducts = await Product.countDocuments({ isActive: true })
@@ -964,7 +1004,6 @@ async function main() {
   console.log('MIGRATION SUMMARY:')
   console.log(`- Categories created/updated: ${categoriesCreated + categoriesUpdated} (Active: ${activeCategories})`)
   console.log(`- Products created/updated: ${productsCreated + productsUpdated}`)
-  console.log(`- Legacy products deactivated: ${legacyResult.modifiedCount}`)
   console.log(`- Total products in DB: ${totalProductsInDb}`)
   console.log(`- FINAL ACTIVE PRODUCT COUNT: ${activeProducts}`)
   console.log('====================================================\n')
