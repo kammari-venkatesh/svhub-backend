@@ -2,6 +2,9 @@ import mongoose from 'mongoose'
 import { Cart } from '../models/Cart.js'
 import { Product } from '../models/Product.js'
 
+const PRODUCT_CART_PROJECTION =
+  'name slug type category storefront image isActive variants.variantId variants.label variants.weight variants.sku variants.price variants.originalPrice variants.discount variants.qty variants.isActive'
+
 export async function populateCart(cart) {
   if (!cart || !Array.isArray(cart.items) || cart.items.length === 0) {
     return {
@@ -13,7 +16,9 @@ export async function populateCart(cart) {
   }
 
   const productIds = cart.items.map((i) => i.productId)
-  const products = await Product.find({ _id: { $in: productIds } }).lean()
+  const products = await Product.find({ _id: { $in: productIds } })
+    .select(PRODUCT_CART_PROJECTION)
+    .lean()
   const productMap = new Map(products.map((p) => [String(p._id), p]))
 
   const resolvedItems = []
@@ -23,13 +28,11 @@ export async function populateCart(cart) {
   for (const item of cart.items) {
     const product = productMap.get(String(item.productId))
     if (!product || product.isActive === false) {
-      // Stale or inactive product - safely omit from active cart
       continue
     }
 
     const variant = (product.variants || []).find((v) => v.variantId === item.variantId)
     if (!variant || variant.isActive === false) {
-      // Stale or inactive variant - safely omit from active cart
       continue
     }
 
@@ -76,6 +79,27 @@ export async function populateCart(cart) {
     count: totalCount,
     subtotal: totalSubtotal,
   }
+}
+
+async function findOrCreateCart(userId) {
+  let cart = await Cart.findOne({ userId })
+  if (!cart) {
+    try {
+      cart = await Cart.create({ userId, items: [] })
+    } catch (err) {
+      if (err.code === 11000) {
+        cart = await Cart.findOne({ userId })
+      } else {
+        throw err
+      }
+    }
+  }
+  return cart
+}
+
+function findCartLine(cart, targetId) {
+  const id = String(targetId || '').trim()
+  return (cart.items || []).find((i) => String(i._id) === id || i.variantId === id)
 }
 
 // 1. Get authenticated customer cart
@@ -130,8 +154,8 @@ export async function addToCart(req, res, next) {
       })
     }
 
-    // Resolve Product & Variant authoritative data
     const product = await Product.findOne({ _id: productId, isActive: true })
+      .select(PRODUCT_CART_PROJECTION)
     if (!product) {
       return res.status(404).json({
         success: false,
@@ -155,59 +179,55 @@ export async function addToCart(req, res, next) {
       })
     }
 
-    // Find or create cart safely
-    let cart = await Cart.findOne({ userId: req.user._id })
-    if (!cart) {
+    let resolved
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const cart = await findOrCreateCart(req.user._id)
+      const existingItem = cart.items.find(
+        (i) => String(i.productId) === String(product._id) && i.variantId === variant.variantId,
+      )
+      const targetQty = existingItem ? existingItem.quantity + qty : qty
+
+      if (targetQty > 99) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'quantity_limit_exceeded',
+            message: 'Maximum 99 units allowed per cart line.',
+          },
+        })
+      }
+
+      if (targetQty > variant.qty) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'insufficient_stock',
+            message: `Only ${variant.qty} units available in stock.`,
+          },
+        })
+      }
+
+      if (existingItem) {
+        // Atomic absolute set to computed target avoids lost increments under concurrency
+        // when this request is the sole writer; retry handles VersionError races.
+        existingItem.quantity = targetQty
+      } else {
+        cart.items.push({
+          productId: product._id,
+          variantId: variant.variantId,
+          quantity: targetQty,
+        })
+      }
+
       try {
-        cart = await Cart.create({ userId: req.user._id, items: [] })
-      } catch (err) {
-        if (err.code === 11000) {
-          cart = await Cart.findOne({ userId: req.user._id })
-        } else {
-          throw err
-        }
+        await cart.save()
+        resolved = await populateCart(cart)
+        break
+      } catch (error) {
+        if (error?.name === 'VersionError' && attempt < 2) continue
+        throw error
       }
     }
-
-    // Check composite line item uniqueness (productId, variantId)
-    const existingItem = cart.items.find(
-      (i) => String(i.productId) === String(product._id) && i.variantId === variant.variantId,
-    )
-
-    const targetQty = existingItem ? existingItem.quantity + qty : qty
-
-    if (targetQty > 99) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'quantity_limit_exceeded',
-          message: 'Maximum 99 units allowed per cart line.',
-        },
-      })
-    }
-
-    if (targetQty > variant.qty) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'insufficient_stock',
-          message: `Only ${variant.qty} units available in stock.`,
-        },
-      })
-    }
-
-    if (existingItem) {
-      existingItem.quantity = targetQty
-    } else {
-      cart.items.push({
-        productId: product._id,
-        variantId: variant.variantId,
-        quantity: targetQty,
-      })
-    }
-
-    await cart.save()
-    const resolved = await populateCart(cart)
 
     res.json({
       success: true,
@@ -233,6 +253,53 @@ export async function updateCartItem(req, res, next) {
       })
     }
 
+    const targetId = String(req.params.id || '').trim()
+    if (!targetId) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'item_not_found',
+          message: 'Item not found in cart.',
+        },
+      })
+    }
+
+    // Prefer atomic operators to avoid lost updates / VersionError under rapid clicks.
+    if (qty === 0) {
+      const pullFilter = mongoose.isValidObjectId(targetId)
+        ? { userId: req.user._id, 'items._id': targetId }
+        : { userId: req.user._id, 'items.variantId': targetId }
+
+      const cart = await Cart.findOneAndUpdate(
+        pullFilter,
+        {
+          $pull: mongoose.isValidObjectId(targetId)
+            ? { items: { _id: targetId } }
+            : { items: { variantId: targetId } },
+        },
+        { new: true },
+      )
+
+      if (!cart) {
+        // Distinguish missing cart vs missing item
+        const existing = await Cart.findOne({ userId: req.user._id }).lean()
+        if (!existing) {
+          return res.status(404).json({
+            success: false,
+            error: { code: 'cart_not_found', message: 'Cart not found.' },
+          })
+        }
+        return res.status(404).json({
+          success: false,
+          error: { code: 'item_not_found', message: 'Item not found in cart.' },
+        })
+      }
+
+      const resolved = await populateCart(cart)
+      return res.json({ success: true, data: resolved })
+    }
+
+    // Stock check requires product read; then atomic $set on the line quantity.
     const cart = await Cart.findOne({ userId: req.user._id })
     if (!cart) {
       return res.status(404).json({
@@ -244,11 +311,7 @@ export async function updateCartItem(req, res, next) {
       })
     }
 
-    const targetId = String(req.params.id || '').trim()
-    const item = cart.items.find(
-      (i) => String(i._id) === targetId || i.variantId === targetId,
-    )
-
+    const item = findCartLine(cart, targetId)
     if (!item) {
       return res.status(404).json({
         success: false,
@@ -259,19 +322,8 @@ export async function updateCartItem(req, res, next) {
       })
     }
 
-    if (qty === 0) {
-      // Remove item
-      cart.items = cart.items.filter((i) => String(i._id) !== String(item._id))
-      await cart.save()
-      const resolved = await populateCart(cart)
-      return res.json({
-        success: true,
-        data: resolved,
-      })
-    }
-
-    // Verify stock with live product
     const product = await Product.findOne({ _id: item.productId, isActive: true })
+      .select(PRODUCT_CART_PROJECTION)
     if (!product) {
       return res.status(400).json({
         success: false,
@@ -305,10 +357,23 @@ export async function updateCartItem(req, res, next) {
       })
     }
 
-    item.quantity = qty
-    await cart.save()
-    const resolved = await populateCart(cart)
+    const updated = await Cart.findOneAndUpdate(
+      { userId: req.user._id, 'items._id': item._id },
+      { $set: { 'items.$.quantity': qty } },
+      { new: true },
+    )
 
+    if (!updated) {
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'item_not_found',
+          message: 'Item not found in cart.',
+        },
+      })
+    }
+
+    const resolved = await populateCart(updated)
     res.json({
       success: true,
       data: resolved,
@@ -321,24 +386,8 @@ export async function updateCartItem(req, res, next) {
 // 4. Remove cart line item
 export async function removeCartItem(req, res, next) {
   try {
-    const cart = await Cart.findOne({ userId: req.user._id })
-    if (!cart) {
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'cart_not_found',
-          message: 'Cart not found.',
-        },
-      })
-    }
-
     const targetId = String(req.params.id || '').trim()
-    const initialLen = cart.items.length
-    cart.items = cart.items.filter(
-      (i) => String(i._id) !== targetId && i.variantId !== targetId,
-    )
-
-    if (cart.items.length === initialLen) {
+    if (!targetId) {
       return res.status(404).json({
         success: false,
         error: {
@@ -348,9 +397,35 @@ export async function removeCartItem(req, res, next) {
       })
     }
 
-    await cart.save()
-    const resolved = await populateCart(cart)
+    const filter = mongoose.isValidObjectId(targetId)
+      ? { userId: req.user._id, 'items._id': targetId }
+      : { userId: req.user._id, 'items.variantId': targetId }
 
+    const cart = await Cart.findOneAndUpdate(
+      filter,
+      {
+        $pull: mongoose.isValidObjectId(targetId)
+          ? { items: { _id: targetId } }
+          : { items: { variantId: targetId } },
+      },
+      { new: true },
+    )
+
+    if (!cart) {
+      const existing = await Cart.findOne({ userId: req.user._id }).lean()
+      if (!existing) {
+        return res.status(404).json({
+          success: false,
+          error: { code: 'cart_not_found', message: 'Cart not found.' },
+        })
+      }
+      return res.status(404).json({
+        success: false,
+        error: { code: 'item_not_found', message: 'Item not found in cart.' },
+      })
+    }
+
+    const resolved = await populateCart(cart)
     res.json({
       success: true,
       data: resolved,
@@ -363,11 +438,11 @@ export async function removeCartItem(req, res, next) {
 // 5. Clear all cart items
 export async function clearCart(req, res, next) {
   try {
-    const cart = await Cart.findOne({ userId: req.user._id })
-    if (cart) {
-      cart.items = []
-      await cart.save()
-    }
+    const cart = await Cart.findOneAndUpdate(
+      { userId: req.user._id },
+      { $set: { items: [] } },
+      { new: true },
+    )
 
     res.json({
       success: true,
@@ -388,58 +463,68 @@ export async function mergeCart(req, res, next) {
   try {
     const incomingItems = Array.isArray(req.body?.items) ? req.body.items : []
 
-    let cart = await Cart.findOne({ userId: req.user._id })
-    if (!cart) {
-      try {
-        cart = await Cart.create({ userId: req.user._id, items: [] })
-      } catch (err) {
-        if (err.code === 11000) {
-          cart = await Cart.findOne({ userId: req.user._id })
+    const productIds = [
+      ...new Set(
+        incomingItems
+          .map((item) => item?.productId)
+          .filter((id) => id && mongoose.isValidObjectId(id))
+          .map(String),
+      ),
+    ]
+
+    const products = productIds.length
+      ? await Product.find({ _id: { $in: productIds }, isActive: true })
+          .select(PRODUCT_CART_PROJECTION)
+          .lean()
+      : []
+    const productMap = new Map(products.map((p) => [String(p._id), p]))
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const cart = await findOrCreateCart(req.user._id)
+
+      for (const item of incomingItems) {
+        const { productId, variantId, quantity } = item || {}
+        if (!productId || !mongoose.isValidObjectId(productId) || !variantId) continue
+
+        const qty = Math.max(1, Math.min(99, parseInt(quantity || 1, 10) || 1))
+        const product = productMap.get(String(productId))
+        if (!product) continue
+
+        const variant = (product.variants || []).find(
+          (v) => v.variantId === variantId && v.isActive !== false,
+        )
+        if (!variant) continue
+
+        const existing = cart.items.find(
+          (i) => String(i.productId) === String(product._id) && i.variantId === variant.variantId,
+        )
+
+        if (existing) {
+          existing.quantity = Math.min(99, Math.min(variant.qty, existing.quantity + qty))
         } else {
-          throw err
+          const allowedQty = Math.min(99, Math.min(variant.qty, qty))
+          if (allowedQty > 0) {
+            cart.items.push({
+              productId: product._id,
+              variantId: variant.variantId,
+              quantity: allowedQty,
+            })
+          }
         }
       }
-    }
 
-    for (const item of incomingItems) {
-      const { productId, variantId, quantity } = item || {}
-      if (!productId || !mongoose.isValidObjectId(productId) || !variantId) continue
-
-      const qty = Math.max(1, Math.min(99, parseInt(quantity || 1, 10) || 1))
-
-      const product = await Product.findOne({ _id: productId, isActive: true })
-      if (!product) continue
-
-      const variant = (product.variants || []).find(
-        (v) => v.variantId === variantId && v.isActive !== false,
-      )
-      if (!variant) continue
-
-      const existing = cart.items.find(
-        (i) => String(i.productId) === String(product._id) && i.variantId === variant.variantId,
-      )
-
-      if (existing) {
-        existing.quantity = Math.min(99, Math.min(variant.qty, existing.quantity + qty))
-      } else {
-        const allowedQty = Math.min(99, Math.min(variant.qty, qty))
-        if (allowedQty > 0) {
-          cart.items.push({
-            productId: product._id,
-            variantId: variant.variantId,
-            quantity: allowedQty,
-          })
-        }
+      try {
+        await cart.save()
+        const resolved = await populateCart(cart)
+        return res.json({
+          success: true,
+          data: resolved,
+        })
+      } catch (error) {
+        if (error?.name === 'VersionError' && attempt < 2) continue
+        throw error
       }
     }
-
-    await cart.save()
-    const resolved = await populateCart(cart)
-
-    res.json({
-      success: true,
-      data: resolved,
-    })
   } catch (err) {
     next(err)
   }

@@ -36,7 +36,7 @@ export async function requireAuth(req, res, next) {
       return fail(res, 401, 'invalid_token', 'Invalid session token. Please log in again.')
     }
 
-    const user = await User.findById(payload.sub)
+    const user = await User.findById(payload.sub).select('-passwordHash')
     if (!user) {
       recordAuditLog({
         action: 'AUTHORIZATION_DENIED',

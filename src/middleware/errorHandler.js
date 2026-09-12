@@ -45,6 +45,15 @@ export function errorHandler(err, req, res, next) {
     })
   }
 
+  // Concurrent document update (Mongoose optimistic locking)
+  if (err.name === 'VersionError') {
+    return res.status(409).json({
+      success: false,
+      code: 'cart_conflict',
+      message: 'Your cart was updated elsewhere. Please try again.',
+    })
+  }
+
   // Generic internal server error
   console.error(`[SERVER_ERROR] ${req?.method || 'UNKNOWN'} ${req?.originalUrl || req?.url || ''}:`, err)
 
