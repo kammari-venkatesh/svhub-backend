@@ -13,14 +13,14 @@ const settingsSchema = new mongoose.Schema(
     supportEmail: {
       type: String,
       required: [true, 'Support email is required'],
-      default: 'care@svhub.in',
+      default: 'info@svhub.com',
       trim: true,
       lowercase: true,
     },
     supportPhone: {
       type: String,
       required: [true, 'Support phone is required'],
-      default: '+91 98765 43210',
+      default: '+91 93463 99677',
       trim: true,
     },
     standardShippingFee: {

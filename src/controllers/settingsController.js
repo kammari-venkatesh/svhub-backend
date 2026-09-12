@@ -10,8 +10,8 @@ export async function getPublicSettings(req, res, next) {
       standardShippingFee: settings.standardShippingFee ?? 40,
       expressShippingFee: settings.expressShippingFee ?? 120,
       freeShippingThreshold: settings.freeShippingThreshold ?? 499,
-      supportEmail: settings.supportEmail || 'care@svhub.in',
-      supportPhone: settings.supportPhone || '+91 98765 43210',
+      supportEmail: settings.supportEmail || 'info@svhub.com',
+      supportPhone: settings.supportPhone || '+91 93463 99677',
     }
 
     res.json({

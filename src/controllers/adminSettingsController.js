@@ -15,8 +15,8 @@ export async function getAdminSettings(req, res, next) {
     res.json({
       success: true,
       data: {
-        supportEmail: settings.supportEmail || 'care@svhub.in',
-        supportPhone: settings.supportPhone || '+91 98765 43210',
+        supportEmail: settings.supportEmail || 'info@svhub.com',
+        supportPhone: settings.supportPhone || '+91 93463 99677',
         standardShippingFee: settings.standardShippingFee ?? 40,
         standardShipping: settings.standardShippingFee ?? 40,
         expressShippingFee: settings.expressShippingFee ?? 120,
