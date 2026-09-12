@@ -58,6 +58,41 @@ assert.equal(publicExpired.campaign, null)
 const publicDisabled = serializePublicHero(disabled, start)
 assert.equal(publicDisabled.mode, 'normal')
 
+// Mongoose subdocuments must preserve enabled:false (spread alone loses schema fields).
+class FakeSubdoc {
+  constructor(data) {
+    this._doc = data
+    Object.defineProperty(this, 'enabled', {
+      get() {
+        return this._doc.enabled
+      },
+      enumerable: false,
+    })
+    Object.defineProperty(this, 'startAt', {
+      get() {
+        return this._doc.startAt
+      },
+      enumerable: false,
+    })
+    Object.defineProperty(this, 'endAt', {
+      get() {
+        return this._doc.endAt
+      },
+      enumerable: false,
+    })
+    Object.defineProperty(this, 'toObject', {
+      value: () => ({ ...this._doc }),
+      enumerable: false,
+    })
+  }
+}
+
+const fakeDisabled = new FakeSubdoc({ ...campaign, enabled: false })
+const fromFake = normalizeHeroCampaign(fakeDisabled, { seedDates: false })
+assert.equal(fromFake.enabled, false)
+assert.equal(serializePublicHero(fakeDisabled, start).mode, 'normal')
+assert.equal(serializePublicHero(fakeDisabled, start).status, 'disabled')
+
 const invalid = validateHeroCampaignPatch({
   startAt: '2026-09-17T10:00',
   endAt: '2026-09-12T10:00',

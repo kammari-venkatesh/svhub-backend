@@ -189,7 +189,19 @@ export async function updateAdminSettings(req, res, next) {
         })
       }
 
-      settings.heroCampaign = merged
+      // Assign plain fields so mongoose persists enabled:false and dates reliably.
+      settings.heroCampaign.enabled = merged.enabled
+      settings.heroCampaign.label = merged.label
+      settings.heroCampaign.title = merged.title
+      settings.heroCampaign.subtitle = merged.subtitle
+      settings.heroCampaign.discountPercent = merged.discountPercent
+      settings.heroCampaign.urgencyLabel = merged.urgencyLabel
+      settings.heroCampaign.ctaLabel = merged.ctaLabel
+      settings.heroCampaign.ctaTo = merged.ctaTo
+      settings.heroCampaign.imageUrl = merged.imageUrl
+      settings.heroCampaign.imageAlt = merged.imageAlt
+      settings.heroCampaign.startAt = merged.startAt
+      settings.heroCampaign.endAt = merged.endAt
       settings.markModified('heroCampaign')
     }
 

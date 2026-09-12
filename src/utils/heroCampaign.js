@@ -88,8 +88,21 @@ export function defaultCampaignWindow(reference = new Date()) {
   return { startAt: start, endAt: end }
 }
 
+function toPlainCampaign(raw) {
+  if (!raw || typeof raw !== 'object') return {}
+  if (typeof raw.toObject === 'function') {
+    return raw.toObject({ depopulate: true, flattenMaps: true })
+  }
+  // Mongoose subdocuments sometimes expose fields on `_doc` when spread is empty.
+  if (raw._doc && typeof raw._doc === 'object') {
+    return { ...raw._doc }
+  }
+  return { ...raw }
+}
+
 export function normalizeHeroCampaign(raw, { seedDates = true, reference = new Date() } = {}) {
-  const base = { ...DEFAULT_HERO_CAMPAIGN, ...(raw && typeof raw === 'object' ? raw : {}) }
+  const plain = toPlainCampaign(raw)
+  const base = { ...DEFAULT_HERO_CAMPAIGN, ...plain }
   const window = defaultCampaignWindow(reference)
 
   let startAt = base.startAt ? parseKolkataDateTime(base.startAt) : null
@@ -112,8 +125,13 @@ export function normalizeHeroCampaign(raw, { seedDates = true, reference = new D
     imageUrl = DEFAULT_HERO_CAMPAIGN.imageUrl
   }
 
+  // Preserve explicit false — do not let DEFAULT_HERO_CAMPAIGN.enabled:true win.
+  const enabled = Object.prototype.hasOwnProperty.call(plain, 'enabled')
+    ? Boolean(plain.enabled)
+    : Boolean(DEFAULT_HERO_CAMPAIGN.enabled)
+
   return {
-    enabled: Boolean(base.enabled),
+    enabled,
     label: String(base.label || DEFAULT_HERO_CAMPAIGN.label).trim(),
     title: String(base.title || DEFAULT_HERO_CAMPAIGN.title).trim(),
     subtitle: String(base.subtitle || DEFAULT_HERO_CAMPAIGN.subtitle).trim(),
