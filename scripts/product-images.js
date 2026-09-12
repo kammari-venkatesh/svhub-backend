@@ -61,7 +61,8 @@ export const productImages = {
   'tomato-thokku': local('tomato-thokku'),
   'mango-thokku': local('mango-thokku'),
   'garlic-sweet-hot-pickle': local('garlic-sweet-hot-pickle'),
-  'ginger-garlic-paste': local('ginger-garlic-paste'),
+  // Unbranded ingredients shot (replaced Spice Nest jar); ?v= busts old branded cache
+  'ginger-garlic-paste': `${local('ginger-garlic-paste')}?v=2`,
   'karuveppilai-thokku': p('1172675'),
   'venthaya-thokku': p('2802527'),
   'curry-leaves-thokku': p('4198023'),
@@ -81,8 +82,9 @@ export const productImages = {
   // ── Spice powders & masalas ────────────────────────────────────────────────
   'chilli-powder': local('chilli-powder'),
   'turmeric-powder': local('turmeric-powder'),
-  'coriander-powder': local('coriander-powder'),
-  'cumin-powder': local('cumin-powder'),
+  // Unbranded powder shots (replaced Quityfress packets); ?v= busts old branded cache
+  'coriander-powder': `${local('coriander-powder')}?v=2`,
+  'cumin-powder': `${local('cumin-powder')}?v=2`,
   'garam-masala': local('garam-masala'),
   'sambar-powder': local('sambar-powder'),
   'rasam-powder': local('rasam-powder'),
