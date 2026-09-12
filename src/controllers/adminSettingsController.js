@@ -1,7 +1,29 @@
 import { Settings } from '../models/Settings.js'
+import {
+  normalizeHeroCampaign,
+  serializeAdminHeroCampaign,
+  validateHeroCampaignPatch,
+} from '../utils/heroCampaign.js'
 
 function isValidEmail(email) {
   return typeof email === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())
+}
+
+function buildAdminPayload(settings) {
+  return {
+    supportEmail: settings.supportEmail || 'info@svhub.com',
+    supportPhone: settings.supportPhone || '+91 93463 99677',
+    standardShippingFee: settings.standardShippingFee ?? 40,
+    standardShipping: settings.standardShippingFee ?? 40,
+    expressShippingFee: settings.expressShippingFee ?? 120,
+    freeShippingThreshold: settings.freeShippingThreshold ?? 499,
+    freeShippingFrom: settings.freeShippingThreshold ?? 499,
+    lowStockThreshold: settings.lowStockThreshold ?? 10,
+    lowStockAlert: settings.lowStockThreshold ?? 10,
+    currency: settings.currency || 'INR',
+    heroCampaign: serializeAdminHeroCampaign(settings.heroCampaign),
+    updatedAt: settings.updatedAt,
+  }
 }
 
 /**
@@ -11,22 +33,9 @@ function isValidEmail(email) {
 export async function getAdminSettings(req, res, next) {
   try {
     const settings = await Settings.getSettings()
-
     res.json({
       success: true,
-      data: {
-        supportEmail: settings.supportEmail || 'info@svhub.com',
-        supportPhone: settings.supportPhone || '+91 93463 99677',
-        standardShippingFee: settings.standardShippingFee ?? 40,
-        standardShipping: settings.standardShippingFee ?? 40,
-        expressShippingFee: settings.expressShippingFee ?? 120,
-        freeShippingThreshold: settings.freeShippingThreshold ?? 499,
-        freeShippingFrom: settings.freeShippingThreshold ?? 499,
-        lowStockThreshold: settings.lowStockThreshold ?? 10,
-        lowStockAlert: settings.lowStockThreshold ?? 10,
-        currency: settings.currency || 'INR',
-        updatedAt: settings.updatedAt,
-      },
+      data: buildAdminPayload(settings),
     })
   } catch (err) {
     next(err)
@@ -53,9 +62,9 @@ export async function updateAdminSettings(req, res, next) {
       lowStockThreshold,
       lowStockAlert,
       currency,
+      heroCampaign,
     } = body
 
-    // Validate email
     if (supportEmail !== undefined) {
       if (!isValidEmail(supportEmail)) {
         return res.status(400).json({
@@ -67,7 +76,6 @@ export async function updateAdminSettings(req, res, next) {
       settings.supportEmail = supportEmail.trim().toLowerCase()
     }
 
-    // Validate phone
     if (supportPhone !== undefined) {
       const trimmedPhone = String(supportPhone).trim()
       if (!trimmedPhone) {
@@ -80,7 +88,6 @@ export async function updateAdminSettings(req, res, next) {
       settings.supportPhone = trimmedPhone
     }
 
-    // Validate standard shipping
     const targetStandardShipping = standardShippingFee !== undefined ? standardShippingFee : standardShipping
     if (targetStandardShipping !== undefined) {
       const val = Number(targetStandardShipping)
@@ -94,7 +101,6 @@ export async function updateAdminSettings(req, res, next) {
       settings.standardShippingFee = val
     }
 
-    // Validate express shipping
     if (expressShippingFee !== undefined) {
       const val = Number(expressShippingFee)
       if (Number.isNaN(val) || val < 0) {
@@ -107,7 +113,6 @@ export async function updateAdminSettings(req, res, next) {
       settings.expressShippingFee = val
     }
 
-    // Validate free shipping threshold
     const targetFreeShipping = freeShippingThreshold !== undefined ? freeShippingThreshold : freeShippingFrom
     if (targetFreeShipping !== undefined) {
       const val = Number(targetFreeShipping)
@@ -121,7 +126,6 @@ export async function updateAdminSettings(req, res, next) {
       settings.freeShippingThreshold = val
     }
 
-    // Validate low stock threshold
     const targetLowStock = lowStockThreshold !== undefined ? lowStockThreshold : lowStockAlert
     if (targetLowStock !== undefined) {
       const val = Number(targetLowStock)
@@ -135,7 +139,6 @@ export async function updateAdminSettings(req, res, next) {
       settings.lowStockThreshold = val
     }
 
-    // Validate currency
     if (currency !== undefined) {
       const trimmedCurr = String(currency).trim().toUpperCase()
       if (!trimmedCurr || trimmedCurr.length > 5) {
@@ -148,23 +151,53 @@ export async function updateAdminSettings(req, res, next) {
       settings.currency = trimmedCurr
     }
 
+    if (heroCampaign !== undefined) {
+      if (!heroCampaign || typeof heroCampaign !== 'object') {
+        return res.status(400).json({
+          success: false,
+          code: 'invalid_hero_campaign',
+          message: 'Hero campaign payload must be an object.',
+        })
+      }
+
+      const current = normalizeHeroCampaign(settings.heroCampaign, { seedDates: true })
+      const { errors, next } = validateHeroCampaignPatch(heroCampaign)
+      if (errors.length) {
+        return res.status(400).json({
+          success: false,
+          code: 'invalid_hero_campaign',
+          message: errors[0].message,
+          details: errors,
+        })
+      }
+
+      const merged = normalizeHeroCampaign(
+        {
+          ...current,
+          ...next,
+          startAt: next.startAt !== undefined ? next.startAt : current.startAt,
+          endAt: next.endAt !== undefined ? next.endAt : current.endAt,
+        },
+        { seedDates: false },
+      )
+
+      if (!(merged.endAt > merged.startAt)) {
+        return res.status(400).json({
+          success: false,
+          code: 'invalid_hero_campaign',
+          message: 'End must be after start.',
+        })
+      }
+
+      settings.heroCampaign = merged
+      settings.markModified('heroCampaign')
+    }
+
     await settings.save()
 
     res.json({
       success: true,
-      data: {
-        supportEmail: settings.supportEmail,
-        supportPhone: settings.supportPhone,
-        standardShippingFee: settings.standardShippingFee,
-        standardShipping: settings.standardShippingFee,
-        expressShippingFee: settings.expressShippingFee,
-        freeShippingThreshold: settings.freeShippingThreshold,
-        freeShippingFrom: settings.freeShippingThreshold,
-        lowStockThreshold: settings.lowStockThreshold,
-        lowStockAlert: settings.lowStockThreshold,
-        currency: settings.currency,
-        updatedAt: settings.updatedAt,
-      },
+      data: buildAdminPayload(settings),
     })
   } catch (err) {
     next(err)
