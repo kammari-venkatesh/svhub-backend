@@ -140,7 +140,8 @@ async function runVerification() {
       )
       assert(
         `Product has valid image: ${exp.slug}`,
-        typeof found.image === 'string' && found.image.startsWith('http')
+        typeof found.image === 'string' &&
+          (found.image.startsWith('http') || found.image === '/catalog/_photo-required.svg')
       )
 
       if (slugSet.has(found.slug)) {

@@ -18,7 +18,7 @@ import 'dotenv/config'
 import mongoose from 'mongoose'
 import { Product } from '../src/models/Product.js'
 import { Category } from '../src/models/Category.js'
-import { productImages } from './product-images.js'
+import { resolveProductImage } from './product-images.js'
 
 const MONGO_URI = process.env.MONGO_URI
 const MONGO_DB = process.env.MONGO_DB || 'svhub'
@@ -949,11 +949,9 @@ const canonicalProducts = [
 
 // Prefer curated unique heroes so re-seeds do not restore shared placeholders
 for (const product of canonicalProducts) {
-  const image = productImages[product.slug]
-  if (image) {
-    product.image = image
-    product.gallery = [image]
-  }
+  const image = resolveProductImage(product.slug)
+  product.image = image
+  product.gallery = [image]
 }
 
 // ─── Main Execution ──────────────────────────────────────────────────────────

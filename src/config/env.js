@@ -7,7 +7,7 @@ function resolveMongoUri() {
   const user = process.env.DB_USERNAME
   const password = process.env.DB_PASSWORD
   if (user && password) {
-    return `mongodb+srv://${encodeURIComponent(user)}:${encodeURIComponent(password)}@cluster0.mqh7sqq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`
+    return `mongodb+srv://${encodeURIComponent(user)}:${encodeURIComponent(password)}@svhub.hjrmqta.mongodb.net/?retryWrites=true&w=majority&appName=svhub`
   }
 
   return ''
