@@ -3,7 +3,7 @@ import { DEFAULT_HERO_CAMPAIGN, defaultCampaignWindow } from '../utils/heroCampa
 
 const heroCampaignSchema = new mongoose.Schema(
   {
-    enabled: { type: Boolean, default: true },
+    enabled: { type: Boolean, default: false },
     label: { type: String, trim: true, default: DEFAULT_HERO_CAMPAIGN.label },
     title: { type: String, trim: true, default: DEFAULT_HERO_CAMPAIGN.title },
     subtitle: { type: String, trim: true, default: DEFAULT_HERO_CAMPAIGN.subtitle },
@@ -113,9 +113,14 @@ settingsSchema.statics.getSettings = async function getSettings() {
   // Migrate existing store settings that predate heroCampaign
   if (!settings.heroCampaign || !settings.heroCampaign.startAt || !settings.heroCampaign.endAt) {
     const { startAt, endAt } = defaultCampaignWindow()
+    const existing = settings.heroCampaign?.toObject?.() || settings.heroCampaign || {}
+    const preservedEnabled = Object.prototype.hasOwnProperty.call(existing, 'enabled')
+      ? Boolean(existing.enabled)
+      : false
     settings.heroCampaign = {
       ...DEFAULT_HERO_CAMPAIGN,
-      ...(settings.heroCampaign?.toObject?.() || settings.heroCampaign || {}),
+      ...existing,
+      enabled: preservedEnabled,
       startAt: settings.heroCampaign?.startAt || startAt,
       endAt: settings.heroCampaign?.endAt || endAt,
     }

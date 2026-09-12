@@ -5,7 +5,8 @@
 export const HERO_TZ = 'Asia/Kolkata'
 
 export const DEFAULT_HERO_CAMPAIGN = {
-  enabled: true,
+  // Fail-safe: missing/corrupt docs show the normal homepage hero.
+  enabled: false,
   label: 'Ganesh Chaturthi Special',
   title: 'Celebrate Ganesh\nChaturthi,\nThe Natural Way.',
   subtitle: 'Celebrate the festival with goodness rooted in tradition and nature.',

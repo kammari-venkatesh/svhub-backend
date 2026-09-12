@@ -151,6 +151,8 @@ export async function updateAdminSettings(req, res, next) {
       settings.currency = trimmedCurr
     }
 
+    let heroCampaignMerged = null
+
     if (heroCampaign !== undefined) {
       if (!heroCampaign || typeof heroCampaign !== 'object') {
         return res.status(400).json({
@@ -189,27 +191,38 @@ export async function updateAdminSettings(req, res, next) {
         })
       }
 
-      // Assign plain fields so mongoose persists enabled:false and dates reliably.
-      settings.heroCampaign.enabled = merged.enabled
-      settings.heroCampaign.label = merged.label
-      settings.heroCampaign.title = merged.title
-      settings.heroCampaign.subtitle = merged.subtitle
-      settings.heroCampaign.discountPercent = merged.discountPercent
-      settings.heroCampaign.urgencyLabel = merged.urgencyLabel
-      settings.heroCampaign.ctaLabel = merged.ctaLabel
-      settings.heroCampaign.ctaTo = merged.ctaTo
-      settings.heroCampaign.imageUrl = merged.imageUrl
-      settings.heroCampaign.imageAlt = merged.imageAlt
-      settings.heroCampaign.startAt = merged.startAt
-      settings.heroCampaign.endAt = merged.endAt
-      settings.markModified('heroCampaign')
+      heroCampaignMerged = merged
     }
 
     await settings.save()
 
+    if (heroCampaignMerged) {
+      const merged = heroCampaignMerged
+      await Settings.updateOne(
+        { _id: settings._id },
+        {
+          $set: {
+            'heroCampaign.enabled': merged.enabled,
+            'heroCampaign.label': merged.label,
+            'heroCampaign.title': merged.title,
+            'heroCampaign.subtitle': merged.subtitle,
+            'heroCampaign.discountPercent': merged.discountPercent,
+            'heroCampaign.urgencyLabel': merged.urgencyLabel,
+            'heroCampaign.ctaLabel': merged.ctaLabel,
+            'heroCampaign.ctaTo': merged.ctaTo,
+            'heroCampaign.imageUrl': merged.imageUrl,
+            'heroCampaign.imageAlt': merged.imageAlt,
+            'heroCampaign.startAt': merged.startAt,
+            'heroCampaign.endAt': merged.endAt,
+          },
+        },
+      )
+    }
+
+    const saved = await Settings.findById(settings._id)
     res.json({
       success: true,
-      data: buildAdminPayload(settings),
+      data: buildAdminPayload(saved),
     })
   } catch (err) {
     next(err)
