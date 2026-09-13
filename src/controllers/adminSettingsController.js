@@ -11,7 +11,7 @@ function isValidEmail(email) {
 
 function buildAdminPayload(settings) {
   return {
-    supportEmail: settings.supportEmail || 'info@svhub.com',
+    supportEmail: settings.supportEmail || 'sgveeras.info@gmail.com',
     supportPhone: settings.supportPhone || '+91 93463 99677',
     standardShippingFee: settings.standardShippingFee ?? 40,
     standardShipping: settings.standardShippingFee ?? 40,

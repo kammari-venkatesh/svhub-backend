@@ -37,7 +37,7 @@ const settingsSchema = new mongoose.Schema(
     supportEmail: {
       type: String,
       required: [true, 'Support email is required'],
-      default: 'info@svhub.com',
+      default: 'sgveeras.info@gmail.com',
       trim: true,
       lowercase: true,
     },
