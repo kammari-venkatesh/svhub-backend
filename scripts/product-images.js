@@ -88,7 +88,7 @@ export const productImages = {
   'chat-masala': `${local('chat-masala')}?v=heritage-5`,
   'kulambu-chilli-powder': `${local('kulambu-chilli-powder')}?v=heritage-2`,
   'paneer-butter-masala': `${local('paneer-butter-masala')}?v=heritage-5`,
-  'peri-peri-snack-seasoning': `${local('peri-peri-snack-seasoning')}?v=heritage-2`,
+  'peri-peri-snack-seasoning': `${local('peri-peri-snack-seasoning')}?v=heritage-6`,
 
   // ── Sweets & savouries ─────────────────────────────────────────────────────
   'athirasam': `${local('athirasam')}?v=heritage-4`,
