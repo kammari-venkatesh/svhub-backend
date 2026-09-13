@@ -28,7 +28,7 @@ export const productImages = {
   'kuppaimeni-soap': `${local('kuppaimeni-soap')}?v=heritage-4`,
   'multanimitti-soap': `${local('multanimitti-soap')}?v=heritage-4`,
   'sweet-basil-soap': `${local('sweet-basil-soap')}?v=heritage-4`,
-  'vettiver-soap': local('vettiver-soap'),
+  'vettiver-soap': `${local('vettiver-soap')}?v=heritage-5`,
 
   // ── Health & wellness ──────────────────────────────────────────────────────
   'multimillet-muesli': `${local('multimillet-muesli')}?v=heritage-1`,
@@ -43,25 +43,25 @@ export const productImages = {
   'paruppu-podi': `${local('paruppu-podi')}?v=heritage-2`,
 
   // ── Seasonings ─────────────────────────────────────────────────────────────
-  'cream-onion-powder': u('photo-1508747703725-719777637510'),
-  'noodles-masala': u('photo-1569718212165-3a8278d5f624'),
-  'pasta-seasoning': u('photo-1621996346565-e3dbc646d9a9'),
-  'peri-peri-seasoning': u('photo-1604908176997-125f25cc6f3d'),
+  'cream-onion-powder': `${local('cream-onion-powder')}?v=heritage-5`,
+  'noodles-masala': `${local('noodles-masala')}?v=heritage-5`,
+  'pasta-seasoning': `${local('pasta-seasoning')}?v=heritage-5`,
+  'peri-peri-seasoning': `${local('peri-peri-seasoning')}?v=heritage-5`,
 
   // ── Native rice ────────────────────────────────────────────────────────────
   'karuppu-kavuni-rice': `${local('karuppu-kavuni-rice')}?v=heritage-1`,
   'kullakar-rice': `${local('kullakar-rice')}?v=heritage-1`,
-  'mappillai-samba-rice': p('723198'),
+  'mappillai-samba-rice': `${local('mappillai-samba-rice')}?v=heritage-5`,
   'security-test-product-prod': `${local('security-test-product-prod')}?v=heritage-1`,
 
   // ── Pickles & thokku / pastes ───────────────────────────────────────────────
   'vadu-maangai-pickle': `${local('vadu-maangai-pickle')}?v=heritage-1`,
-  'vadu-maanga-thokku': local('vadu-maanga-thokku'),
+  'vadu-maanga-thokku': `${local('vadu-maanga-thokku')}?v=heritage-5`,
   'tomato-thokku': `${local('tomato-thokku')}?v=heritage-1`,
   'mango-thokku': `${local('mango-thokku')}?v=heritage-3`,
   'garlic-sweet-hot-pickle': `${local('garlic-sweet-hot-pickle')}?v=heritage-3`,
   'ginger-garlic-paste': `${local('ginger-garlic-paste')}?v=heritage-3`,
-  'karuveppilai-thokku': p('1172675'),
+  'karuveppilai-thokku': `${local('karuveppilai-thokku')}?v=heritage-5`,
   'venthaya-thokku': `${local('venthaya-thokku')}?v=heritage-1`,
   'curry-leaves-thokku': `${local('curry-leaves-thokku')}?v=heritage-4`,
   'ginger-thokku': `${local('ginger-thokku')}?v=heritage-3`,
@@ -81,13 +81,13 @@ export const productImages = {
   'turmeric-powder': `${local('turmeric-powder')}?v=heritage-3`,
   'coriander-powder': `${local('coriander-powder')}?v=heritage-2`,
   'cumin-powder': `${local('cumin-powder')}?v=heritage-2`,
-  'garam-masala': local('garam-masala'),
+  'garam-masala': `${local('garam-masala')}?v=heritage-5`,
   'sambar-powder': `${local('sambar-powder')}?v=heritage-1`,
   'rasam-powder': `${local('rasam-powder')}?v=heritage-2`,
   'briyani-masala': `${local('briyani-masala')}?v=heritage-2`,
-  'chat-masala': local('chat-masala'),
+  'chat-masala': `${local('chat-masala')}?v=heritage-5`,
   'kulambu-chilli-powder': `${local('kulambu-chilli-powder')}?v=heritage-2`,
-  'paneer-butter-masala': u('photo-1631452180519-c014fe946bc7'),
+  'paneer-butter-masala': `${local('paneer-butter-masala')}?v=heritage-5`,
   'peri-peri-snack-seasoning': `${local('peri-peri-snack-seasoning')}?v=heritage-2`,
 
   // ── Sweets & savouries ─────────────────────────────────────────────────────
