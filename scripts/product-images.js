@@ -24,19 +24,19 @@ export const productImages = {
 
   // ── Handmade soaps ─────────────────────────────────────────────────────────
   'hibiscus-soap': local('hibiscus-soap'),
-  'kasthuri-manjal-soap': local('kasthuri-manjal-soap'),
+  'kasthuri-manjal-soap': `${local('kasthuri-manjal-soap')}?v=heritage-1`,
   'kuppaimeni-soap': local('kuppaimeni-soap'),
   'multanimitti-soap': local('multanimitti-soap'),
   'sweet-basil-soap': local('sweet-basil-soap'),
   'vettiver-soap': local('vettiver-soap'),
 
   // ── Health & wellness ──────────────────────────────────────────────────────
-  'multimillet-muesli': local('multimillet-muesli'),
+  'multimillet-muesli': `${local('multimillet-muesli')}?v=heritage-1`,
   'beetroot-nutrimix': p('244393'),
-  'healthmix': u('photo-1498837167922-ddd27525d352'),
+  'healthmix': `${local('healthmix')}?v=heritage-1`,
 
   // ── Idli podi ──────────────────────────────────────────────────────────────
-  'idli-podi-regular': local('idli-podi-regular'),
+  'idli-podi-regular': `${local('idli-podi-regular')}?v=heritage-1`,
   'ellu-idli-podi': p('4110251'),
   'karuveppilai-idli-podi': u('photo-1596040033229-a9821ebd058d'),
   'murungai-idli-podi': p('2255935'),
@@ -49,22 +49,21 @@ export const productImages = {
   'peri-peri-seasoning': u('photo-1604908176997-125f25cc6f3d'),
 
   // ── Native rice ────────────────────────────────────────────────────────────
-  // Local karuppu file was mislabeled; keep earlier working Unsplash rice hero.
-  'karuppu-kavuni-rice': u('photo-1536304993881-ff6e9eefa2a6'),
-  'kullakar-rice': local('kullakar-rice'),
+  'karuppu-kavuni-rice': `${local('karuppu-kavuni-rice')}?v=heritage-1`,
+  'kullakar-rice': `${local('kullakar-rice')}?v=heritage-1`,
   'mappillai-samba-rice': p('723198'),
-  'security-test-product-prod': u('photo-1516684669134-de6f7c473a2a'),
+  'security-test-product-prod': `${local('security-test-product-prod')}?v=heritage-1`,
 
   // ── Pickles & thokku / pastes ───────────────────────────────────────────────
-  'vadu-maangai-pickle': local('vadu-maangai-pickle'),
+  'vadu-maangai-pickle': `${local('vadu-maangai-pickle')}?v=heritage-1`,
   'vadu-maanga-thokku': local('vadu-maanga-thokku'),
-  'tomato-thokku': local('tomato-thokku'),
+  'tomato-thokku': `${local('tomato-thokku')}?v=heritage-1`,
   'mango-thokku': local('mango-thokku'),
   'garlic-sweet-hot-pickle': local('garlic-sweet-hot-pickle'),
   // Unbranded ingredients shot (replaced Spice Nest jar); ?v= busts old branded cache
   'ginger-garlic-paste': `${local('ginger-garlic-paste')}?v=2`,
   'karuveppilai-thokku': p('1172675'),
-  'venthaya-thokku': p('2802527'),
+  'venthaya-thokku': `${local('venthaya-thokku')}?v=heritage-1`,
   'curry-leaves-thokku': p('4198023'),
   'ginger-thokku': u('photo-1576045057995-568f588f82fb'),
   'mango-ginger-thokku': u('photo-1605027990121-cbae9e0642df'),
@@ -72,9 +71,9 @@ export const productImages = {
   'nutmeg-jaathikai-thokku': p('1435904'),
   'pirandai-thokku':
     'https://upload.wikimedia.org/wikipedia/commons/a/a3/Amla_Pickles.jpg',
-  'pulikaichal': u('photo-1585937421612-70a008356fbe'),
+  'pulikaichal': `${local('pulikaichal')}?v=heritage-1`,
   'small-onion-thokku': u('photo-1518977676601-b53f82aba655'),
-  'sprouted-venthayam-thokku': u('photo-1515543904379-3d757afe72e4'),
+  'sprouted-venthayam-thokku': `${local('sprouted-venthayam-thokku')}?v=heritage-1`,
   'vaazhaipoo-thokku': u('photo-1571771894821-ce9b6c11b08e'),
   'vallarai-thokku': p('1656663'),
   'vatha-kuzhambu-paste': u('photo-1565557623262-b51c2513a641'),
@@ -86,7 +85,7 @@ export const productImages = {
   'coriander-powder': `${local('coriander-powder')}?v=2`,
   'cumin-powder': `${local('cumin-powder')}?v=2`,
   'garam-masala': local('garam-masala'),
-  'sambar-powder': local('sambar-powder'),
+  'sambar-powder': `${local('sambar-powder')}?v=heritage-1`,
   'rasam-powder': local('rasam-powder'),
   'briyani-masala': local('briyani-masala'),
   'chat-masala': local('chat-masala'),
