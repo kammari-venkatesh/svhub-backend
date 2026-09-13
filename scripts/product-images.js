@@ -32,15 +32,15 @@ export const productImages = {
 
   // ── Health & wellness ──────────────────────────────────────────────────────
   'multimillet-muesli': `${local('multimillet-muesli')}?v=heritage-1`,
-  'beetroot-nutrimix': p('244393'),
+  'beetroot-nutrimix': `${local('beetroot-nutrimix')}?v=heritage-2`,
   'healthmix': `${local('healthmix')}?v=heritage-1`,
 
   // ── Idli podi ──────────────────────────────────────────────────────────────
   'idli-podi-regular': `${local('idli-podi-regular')}?v=heritage-1`,
-  'ellu-idli-podi': p('4110251'),
-  'karuveppilai-idli-podi': u('photo-1596040033229-a9821ebd058d'),
-  'murungai-idli-podi': p('2255935'),
-  'paruppu-podi': u('photo-1586201375761-83865001e31c'),
+  'ellu-idli-podi': `${local('ellu-idli-podi')}?v=heritage-2`,
+  'karuveppilai-idli-podi': `${local('karuveppilai-idli-podi')}?v=heritage-2`,
+  'murungai-idli-podi': `${local('murungai-idli-podi')}?v=heritage-2`,
+  'paruppu-podi': `${local('paruppu-podi')}?v=heritage-2`,
 
   // ── Seasonings ─────────────────────────────────────────────────────────────
   'cream-onion-powder': u('photo-1508747703725-719777637510'),
@@ -79,19 +79,18 @@ export const productImages = {
   'vatha-kuzhambu-paste': u('photo-1565557623262-b51c2513a641'),
 
   // ── Spice powders & masalas ────────────────────────────────────────────────
-  'chilli-powder': local('chilli-powder'),
+  'chilli-powder': `${local('chilli-powder')}?v=heritage-2`,
   'turmeric-powder': local('turmeric-powder'),
-  // Unbranded powder shots (replaced Quityfress packets); ?v= busts old branded cache
-  'coriander-powder': `${local('coriander-powder')}?v=2`,
-  'cumin-powder': `${local('cumin-powder')}?v=2`,
+  'coriander-powder': `${local('coriander-powder')}?v=heritage-2`,
+  'cumin-powder': `${local('cumin-powder')}?v=heritage-2`,
   'garam-masala': local('garam-masala'),
   'sambar-powder': `${local('sambar-powder')}?v=heritage-1`,
-  'rasam-powder': local('rasam-powder'),
-  'briyani-masala': local('briyani-masala'),
+  'rasam-powder': `${local('rasam-powder')}?v=heritage-2`,
+  'briyani-masala': `${local('briyani-masala')}?v=heritage-2`,
   'chat-masala': local('chat-masala'),
-  'kulambu-chilli-powder': local('kulambu-chilli-powder'),
+  'kulambu-chilli-powder': `${local('kulambu-chilli-powder')}?v=heritage-2`,
   'paneer-butter-masala': u('photo-1631452180519-c014fe946bc7'),
-  'peri-peri-snack-seasoning': p('4198021'),
+  'peri-peri-snack-seasoning': `${local('peri-peri-snack-seasoning')}?v=heritage-2`,
 
   // ── Sweets & savouries ─────────────────────────────────────────────────────
   'athirasam': local('athirasam'),
