@@ -20,14 +20,14 @@ const local = (slug) => `/catalog/${slug}.jpg`
  */
 export const productImages = {
   // ── Daily meal ─────────────────────────────────────────────────────────────
-  'idiyappam-meal': local('idiyappam-meal'),
+  'idiyappam-meal': `${local('idiyappam-meal')}?v=heritage-4`,
 
   // ── Handmade soaps ─────────────────────────────────────────────────────────
-  'hibiscus-soap': local('hibiscus-soap'),
+  'hibiscus-soap': `${local('hibiscus-soap')}?v=heritage-4`,
   'kasthuri-manjal-soap': `${local('kasthuri-manjal-soap')}?v=heritage-1`,
-  'kuppaimeni-soap': local('kuppaimeni-soap'),
-  'multanimitti-soap': local('multanimitti-soap'),
-  'sweet-basil-soap': local('sweet-basil-soap'),
+  'kuppaimeni-soap': `${local('kuppaimeni-soap')}?v=heritage-4`,
+  'multanimitti-soap': `${local('multanimitti-soap')}?v=heritage-4`,
+  'sweet-basil-soap': `${local('sweet-basil-soap')}?v=heritage-4`,
   'vettiver-soap': local('vettiver-soap'),
 
   // ── Health & wellness ──────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ export const productImages = {
   'ginger-garlic-paste': `${local('ginger-garlic-paste')}?v=heritage-3`,
   'karuveppilai-thokku': p('1172675'),
   'venthaya-thokku': `${local('venthaya-thokku')}?v=heritage-1`,
-  'curry-leaves-thokku': p('4198023'),
+  'curry-leaves-thokku': `${local('curry-leaves-thokku')}?v=heritage-4`,
   'ginger-thokku': `${local('ginger-thokku')}?v=heritage-3`,
   'mango-ginger-thokku': `${local('mango-ginger-thokku')}?v=heritage-3`,
   'naatu-malli-thokku': `${local('naatu-malli-thokku')}?v=heritage-3`,
@@ -73,8 +73,8 @@ export const productImages = {
   'small-onion-thokku': `${local('small-onion-thokku')}?v=heritage-3`,
   'sprouted-venthayam-thokku': `${local('sprouted-venthayam-thokku')}?v=heritage-3`,
   'vaazhaipoo-thokku': `${local('vaazhaipoo-thokku')}?v=heritage-3`,
-  'vallarai-thokku': p('1656663'),
-  'vatha-kuzhambu-paste': u('photo-1565557623262-b51c2513a641'),
+  'vallarai-thokku': `${local('vallarai-thokku')}?v=heritage-4`,
+  'vatha-kuzhambu-paste': `${local('vatha-kuzhambu-paste')}?v=heritage-4`,
 
   // ── Spice powders & masalas ────────────────────────────────────────────────
   'chilli-powder': `${local('chilli-powder')}?v=heritage-2`,
@@ -91,10 +91,10 @@ export const productImages = {
   'peri-peri-snack-seasoning': `${local('peri-peri-snack-seasoning')}?v=heritage-2`,
 
   // ── Sweets & savouries ─────────────────────────────────────────────────────
-  'athirasam': local('athirasam'),
-  'mysore-pak': local('mysore-pak'),
-  'murukku': local('murukku'),
-  'thattai': local('thattai'),
+  'athirasam': `${local('athirasam')}?v=heritage-4`,
+  'mysore-pak': `${local('mysore-pak')}?v=heritage-4`,
+  'murukku': `${local('murukku')}?v=heritage-4`,
+  'thattai': `${local('thattai')}?v=heritage-4`,
 }
 
 /** @deprecated Kept empty — catalog products must never use the photo-required placeholder. */
